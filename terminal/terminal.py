@@ -125,12 +125,17 @@ def sdad_from(ia):
 # ------------------------------------------------------------------------------- relayer + state
 
 class Terminal:
-    def __init__(self, port, relayer):
+    def __init__(self, port, relayer, i2c_bus=None):
         self.relayer = relayer.rstrip("/")
-        self.ser = serial.Serial()
-        self.ser.port, self.ser.baudrate, self.ser.timeout = port, 115200, 0.2
-        self.ser.dtr = self.ser.rts = False
-        self.ser.open()
+        self.ser, self.reader = None, None
+        if i2c_bus is not None:  # RFID reader wired straight to this machine's I2C (Raspberry Pi)
+            from reader_i2c import I2CReader
+            self.reader = I2CReader(bus=i2c_bus)
+        else:  # M5Stick reader over USB serial
+            self.ser = serial.Serial()
+            self.ser.port, self.ser.baudrate, self.ser.timeout = port, 115200, 0.2
+            self.ser.dtr = self.ser.rts = False
+            self.ser.open()
         self.lock = threading.Lock()
         self.sig_event = threading.Event()
         self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None}
@@ -174,15 +179,39 @@ class Terminal:
         self.set(mode="idle", screen="Ready", detail="", amount=None, code=None, tx=None, ok=None)
 
     def write(self, line):
-        self.ser.write((line + "\n").encode())
+        if self.ser is None:
+            return
+        try:
+            self.ser.write((line + "\n").encode())
+        except (serial.SerialException, OSError):
+            self._reconnect()
+
+    def _reconnect(self):
+        """The reader resets or gets replugged sometimes: reopen its port (it may change name)."""
+        import glob
+        try:
+            self.ser.close()
+        except Exception:  # noqa: BLE001
+            pass
+        while True:
+            time.sleep(1)
+            ports = [self.ser.port] + sorted(p for p in glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*") if "R3C" not in p)
+            for p in ports:
+                try:
+                    self.ser.port = p
+                    self.ser.open()
+                    print(f"reader connected on {p}", flush=True)
+                    return
+                except (serial.SerialException, OSError):
+                    continue
 
     # serial loop
     def run(self):
         while True:
             try:
                 line = self.ser.readline().decode(errors="replace").strip()
-            except serial.SerialException:
-                time.sleep(1)
+            except (serial.SerialException, OSError):
+                self._reconnect()
                 continue
             if not line:
                 continue
@@ -203,14 +232,47 @@ class Terminal:
             if line == "=== TEST START ===":
                 self._reset_tap()
             elif line == "READY":
-                threading.Thread(target=self.on_card, daemon=True).start()
+                threading.Thread(target=self.on_card, args=(self._serial_sign,), daemon=True).start()
             elif line in ("SIGNED", "SIGFAIL"):
                 self.sig_event.set()
             elif line.startswith("FAIL") or line == "NOCHAL":
                 if self.state["mode"] != "idle" and self.state["ok"] is None:
                     self.set(detail="Card read failed — tap again")
 
-    def on_card(self):
+    def _serial_sign(self, chal):
+        self.write("CHAL " + chal)
+        if not self.sig_event.wait(6) or not self.ia:
+            raise RuntimeError("card moved away — tap again")
+        return sdad_from(self.ia)
+
+    def run_i2c(self):
+        """Poll the Pi-attached reader; only talk to cards when the merchant is charging/registering."""
+        from reader_i2c import CardError
+        while True:
+            if self.state["mode"] not in ("pay", "register") or not self.reader.card_present():
+                time.sleep(0.15)
+                continue
+            # Retry straight away while the card is still on the reader: no need to lift and re-tap.
+            for attempt in range(5):
+                self.set(detail="Reading card… hold it still" if attempt == 0 else "Almost… keep holding")
+                try:
+                    card = self.reader.read_card()
+                    self.aid, self.gpo, self.recs = card["aid"], card["gpo"], card["recs"]
+                    self.on_card(self.reader.internal_authenticate)
+                    break
+                except (CardError, OSError) as e:
+                    err = e
+                    time.sleep(0.05)
+                    if not self.reader.card_present(reset=True):
+                        break
+            else:
+                err = None
+            if self.state["mode"] in ("pay", "register"):
+                self.set(detail="Couldn't read the card — hold it flat and still, then tap again")
+            self._reset_tap()
+            self.reader.wait_removed()
+
+    def on_card(self, sign):
         mode = self.state["mode"]
         if mode == "idle":
             self.write("SKIP")
@@ -224,10 +286,7 @@ class Terminal:
                 pay_id, chal = r["id"], r["challenge"]
             else:
                 chal = self.post(f"/api/register/{self.state['code']}/challenge")["challenge"]
-            self.write("CHAL " + chal)
-            if not self.sig_event.wait(6) or not self.ia:
-                raise RuntimeError("card moved away — tap again")
-            sig = sdad_from(self.ia).hex()
+            sig = sign(chal).hex()
             if mode == "register":
                 self.set(detail="Creating wallet…")
                 w = self.post(f"/api/register/{self.state['code']}/card", {"cardModulus": modulus.hex(), "cardExponent": exponent.hex(), "cardSig": sig})
@@ -295,11 +354,13 @@ def main():
     ap.add_argument("--relayer", default="http://localhost:8787")
     ap.add_argument("--capk", default=os.path.join(HERE, "..", "reader", "tools", "capk.txt"))
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--i2c-bus", type=int, default=None, help="use an RFID reader on this I2C bus (Raspberry Pi) instead of --serial")
     a = ap.parse_args()
     load_capks(a.capk)
-    term = Terminal(a.serial, a.relayer)
-    threading.Thread(target=term.run, daemon=True).start()
-    print(f"terminal UI on http://localhost:{a.port}  (reader {a.serial}, relayer {a.relayer})")
+    term = Terminal(a.serial, a.relayer, a.i2c_bus)
+    threading.Thread(target=term.run_i2c if term.reader else term.run, daemon=True).start()
+    src = f"i2c-{a.i2c_bus} (chip 0x{term.reader.version:02X})" if term.reader else a.serial
+    print(f"terminal UI on http://localhost:{a.port}  (reader {src}, relayer {a.relayer})", flush=True)
     http.server.ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(term)).serve_forever()
 
 

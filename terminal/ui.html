@@ -5,60 +5,199 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tap2ETH Terminal</title>
   <style>
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: system-ui, sans-serif; background: #020617; color: #f8fafc; height: 100vh; display: flex; }
-    #left { flex: 1.2; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 24px; text-align: center; }
-    #right { flex: 1; background: #0f172a; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
-    #screen { font-size: 46px; font-weight: 800; }
-    #detail { font-size: 22px; color: #94a3b8; margin-top: 12px; min-height: 30px; }
-    #tx { font-size: 13px; color: #93c5fd; margin-top: 10px; word-break: break-all; }
-    .ok #screen { color: #4ade80; } .bad #screen { color: #f87171; }
-    input { font-size: 34px; padding: 10px; border-radius: 12px; border: 0; width: 100%; text-align: right; background: #1e293b; color: white; }
-    .keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-    button { font-size: 24px; padding: 14px; border-radius: 12px; border: 0; background: #334155; color: white; cursor: pointer; }
-    .go { background: #22c55e; color: #052e16; font-weight: 700; }
-    .alt { background: #1d4ed8; font-size: 18px; }
-    .cancel { background: #7f1d1d; font-size: 18px; }
-    .brand { color: #64748b; font-size: 14px; margin-bottom: 30px; letter-spacing: 2px; }
-    .nfc { font-size: 70px; margin-bottom: 10px; }
+    :root { --navy: #14213d; --navy2: #1d2d55; --panel: #22345f; --ink: #f4f6fb; --soft: #9aa7c2; --gold: #c9a14a; --blue: #2457f5; --green: #1f9d62; --red: #d0453a; }
+    * { box-sizing: border-box; margin: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--navy); color: var(--ink); user-select: none; -webkit-tap-highlight-color: transparent; }
+    .screen { position: absolute; inset: 0; display: none; }
+    .screen.on { display: flex; }
+    button { font: inherit; color: inherit; border: 0; cursor: pointer; touch-action: manipulation; }
+    button:active { filter: brightness(1.25); transform: scale(.98); }
+
+    /* ---------- amount entry ---------- */
+    #s-entry { padding: 10px; gap: 10px; }
+    .entry-left { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; padding: 6px 4px 4px 8px; }
+    .merchant { font-size: 13px; color: var(--soft); }
+    .merchant b { color: var(--ink); font-weight: 600; }
+    .amount { font-size: 46px; font-weight: 800; letter-spacing: -1px; line-height: 1; word-break: break-all; }
+    .amount .cur { font-size: 16px; font-weight: 600; color: var(--soft); letter-spacing: 0; margin-left: 4px; }
+    .amount.empty { color: #55648a; }
+    .hint { font-size: 12px; color: var(--soft); }
+    .charge { width: 100%; padding: 14px 8px; border-radius: 12px; background: var(--green); font-size: 20px; font-weight: 700; }
+    .charge[disabled] { background: #2b3d66; color: #6b7ba0; }
+    .link { background: none; color: var(--soft); font-size: 12px; text-decoration: underline; padding: 4px 0 0; text-align: left; }
+    .pad { width: 220px; flex: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 6px; }
+    .pad button { background: var(--panel); border-radius: 10px; font-size: 24px; font-weight: 600; }
+    .pad .del { font-size: 20px; color: var(--soft); }
+
+    /* ---------- tap / waiting / result ---------- */
+    .center { flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 14px 20px; gap: 6px; }
+    .big { font-size: 40px; font-weight: 800; letter-spacing: -1px; }
+    .big .cur { font-size: 16px; font-weight: 600; color: var(--soft); letter-spacing: 0; }
+    .title { font-size: 22px; font-weight: 700; }
+    .sub { font-size: 14px; color: var(--soft); max-width: 400px; line-height: 1.35; min-height: 19px; }
+    .ghost { margin-top: 8px; padding: 8px 22px; border-radius: 999px; background: rgba(255,255,255,.08); font-size: 14px; color: var(--soft); }
+
+    /* contactless mark with pulsing rings */
+    .tapmark { position: relative; width: 120px; height: 84px; margin-bottom: 6px; }
+    .card { position: absolute; left: 10px; top: 14px; width: 100px; height: 64px; border-radius: 10px; background: linear-gradient(150deg, #2c4378, var(--navy2)); box-shadow: 0 8px 20px rgba(0,0,0,.35); }
+    .card::before { content: ""; position: absolute; left: 12px; top: 22px; width: 24px; height: 18px; border-radius: 4px; background: linear-gradient(135deg, #e8cd8a, var(--gold)); }
+    .ring { position: absolute; right: -4px; top: 50%; width: 22px; height: 22px; border: 3px solid var(--gold); border-left-color: transparent; border-bottom-color: transparent; border-radius: 50%; transform: translateY(-50%) rotate(45deg); opacity: 0; animation: ring 1.6s ease-out infinite; }
+    .ring.r2 { width: 36px; height: 36px; right: -11px; animation-delay: .25s; }
+    .ring.r3 { width: 50px; height: 50px; right: -18px; animation-delay: .5s; }
+    @keyframes ring { 0% { opacity: 0; } 30% { opacity: 1; } 100% { opacity: 0; } }
+    .busy .ring { animation-duration: .7s; }
+
+    .phone { width: 46px; height: 76px; border: 3px solid var(--ink); border-radius: 10px; display: grid; place-items: center; margin-bottom: 8px; animation: buzz 1.4s ease-in-out infinite; }
+    .phone::after { content: ""; width: 20px; height: 24px; border-radius: 50%; border: 2.5px solid var(--blue); box-shadow: inset 0 0 0 4px var(--navy), inset 0 0 0 6.5px var(--blue); }
+    @keyframes buzz { 0%, 70%, 100% { transform: rotate(0); } 75% { transform: rotate(-6deg); } 85% { transform: rotate(6deg); } }
+
+    .badge { width: 74px; height: 74px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 6px; }
+    .badge svg { width: 40px; height: 40px; }
+    #s-paid { background: var(--green); }
+    #s-paid .badge { background: rgba(255,255,255,.18); }
+    #s-paid .sub, #s-declined .sub { color: rgba(255,255,255,.85); }
+    #s-declined { background: var(--red); }
+    #s-declined .badge { background: rgba(255,255,255,.18); }
+    .tx { font-size: 10px; color: rgba(255,255,255,.7); word-break: break-all; max-width: 420px; }
+
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
   </style>
 </head>
 <body>
-  <div id="left">
-    <div class="brand">TAP2ETH · MERCHANT TERMINAL</div>
-    <div class="nfc" id="icon">💳</div>
-    <div id="screen">Ready</div>
-    <div id="detail"></div>
-    <div id="tx"></div>
-  </div>
-  <div id="right">
-    <input id="amount" placeholder="0.00" inputmode="decimal" />
-    <div class="keys" id="keys"></div>
-    <button class="go" id="charge">Charge</button>
-    <button class="alt" id="register">Register a card</button>
-    <button class="cancel" id="cancel">Cancel</button>
-  </div>
+
+  <!-- 1. Merchant types the amount -->
+  <section class="screen on" id="s-entry">
+    <div class="entry-left">
+      <div class="merchant"><b>Tap2ETH Café</b> · new sale</div>
+      <div>
+        <div class="amount empty" id="amount">0<span class="cur">tUSDC</span></div>
+        <div class="hint" id="entry-hint">Enter the amount</div>
+      </div>
+      <div>
+        <button class="charge" id="charge" disabled>Charge</button>
+        <button class="link" id="link-card">Link a card with a code</button>
+      </div>
+    </div>
+    <div class="pad" id="pad"></div>
+  </section>
+
+  <!-- 2. Customer taps the card -->
+  <section class="screen center" id="s-tap">
+    <div class="tapmark" id="tapmark"><div class="card"></div><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span></div>
+    <div class="big" id="tap-amount">0 <span class="cur">tUSDC</span></div>
+    <div class="title" id="tap-title">Tap your card</div>
+    <div class="sub" id="tap-sub">Hold it flat on the reader until you're told to remove it</div>
+    <button class="ghost" id="cancel-tap">Cancel</button>
+  </section>
+
+  <!-- 3. Waiting for the customer's phone -->
+  <section class="screen center" id="s-phone">
+    <div class="phone"></div>
+    <div class="title">Approve on your phone</div>
+    <div class="sub" id="phone-sub">Card read. Confirm the payment with your fingerprint.</div>
+    <button class="ghost" id="cancel-phone">Cancel sale</button>
+  </section>
+
+  <!-- 4a. Paid -->
+  <section class="screen center" id="s-paid">
+    <div class="badge"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <div class="big" id="paid-amount">0 <span class="cur" style="color:rgba(255,255,255,.8)">tUSDC</span></div>
+    <div class="title">Paid</div>
+    <div class="tx" id="paid-tx"></div>
+  </section>
+
+  <!-- 4b. Declined -->
+  <section class="screen center" id="s-declined">
+    <div class="badge"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg></div>
+    <div class="title">Payment declined</div>
+    <div class="sub" id="declined-why"></div>
+    <button class="ghost" id="declined-ok" style="color:#fff">New sale</button>
+  </section>
+
 <script>
   const $ = (id) => document.getElementById(id);
-  for (const k of ["1","2","3","4","5","6","7","8","9",".","0","⌫"]) {
-    const b = document.createElement("button"); b.textContent = k;
-    b.onclick = () => { const a = $("amount"); a.value = k === "⌫" ? a.value.slice(0, -1) : a.value + k; };
-    $("keys").appendChild(b);
-  }
   const post = (p, body) => fetch(p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
-  $("charge").onclick = () => { const v = $("amount").value; if (Number(v) > 0) post("/pay", { amount: v }); };
-  $("register").onclick = () => { const c = prompt("Code shown on the customer's phone:"); if (c) post("/register", { code: c.trim() }); };
-  $("cancel").onclick = () => { $("amount").value = ""; post("/cancel"); };
-  async function tick() {
-    try {
-      const s = await (await fetch("/state")).json();
-      $("screen").textContent = s.screen; $("detail").textContent = s.detail || "";
-      $("tx").textContent = s.tx ? "tx " + s.tx : "";
-      document.body.className = s.ok === true ? "ok" : s.ok === false ? "bad" : "";
-      $("icon").textContent = s.ok === true ? "✅" : s.ok === false ? "❌" : s.mode === "waiting" ? "📱" : "💳";
-    } catch {}
+  let entry = "", linkMode = false, last = "", resetTimer;
+
+  // ---- keypad
+  for (const k of ["1","2","3","4","5","6","7","8","9",".","0","⌫"]) {
+    const b = document.createElement("button");
+    b.textContent = k;
+    if (k === "⌫") b.className = "del";
+    b.onclick = () => press(k);
+    $("pad").appendChild(b);
   }
-  setInterval(tick, 500); tick();
+  function press(k) {
+    if (k === "⌫") entry = entry.slice(0, -1);
+    else if (k === "." && (linkMode || entry.includes("."))) return;
+    else if (entry.length < (linkMode ? 4 : 7) && !(entry.includes(".") && entry.split(".")[1].length >= 2)) entry = (entry === "0" && k !== ".") ? k : entry + k;
+    drawEntry();
+  }
+  function drawEntry() {
+    const shown = entry || (linkMode ? "····" : "0");
+    $("amount").innerHTML = linkMode ? shown : `${shown}<span class="cur">tUSDC</span>`;
+    $("amount").classList.toggle("empty", !entry);
+    $("entry-hint").textContent = linkMode ? "Enter the 4-digit code from the customer's phone" : "Enter the amount";
+    $("charge").textContent = linkMode ? "Link card" : "Charge";
+    $("charge").disabled = linkMode ? entry.length !== 4 : !(Number(entry) > 0);
+    $("link-card").textContent = linkMode ? "Back to sales" : "Link a card with a code";
+  }
+  $("link-card").onclick = () => { linkMode = !linkMode; entry = ""; drawEntry(); };
+  $("charge").onclick = () => {
+    if (linkMode) post("/register", { code: entry });
+    else post("/pay", { amount: entry });
+    entry = ""; linkMode = false; drawEntry();
+  };
+  const cancel = () => post("/cancel");
+  $("cancel-tap").onclick = cancel;
+  $("cancel-phone").onclick = cancel;
+  $("declined-ok").onclick = cancel;
+
+  // ---- plain-language reasons
+  function why(s) {
+    const d = String(s.detail || "");
+    if (/OverLimit/.test(d)) return "Over the customer's spending limit.";
+    if (/IsFrozen/.test(d)) return "The customer's wallet is frozen.";
+    if (/rejected/.test(d)) return "The customer declined on their phone.";
+    if (/not registered/.test(d)) return "This card isn't linked to a Tap2ETH wallet yet.";
+    if (/Expired/.test(d)) return "The request timed out. Start a new sale.";
+    if (/BadCardSignature|BadPhoneSignature/.test(d)) return "The signatures didn't match this wallet.";
+    return d || "Something went wrong. Start a new sale.";
+  }
+  const fmt = (a) => Number(a).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+
+  // ---- state → screen
+  function show(id) { for (const s of document.querySelectorAll(".screen")) s.classList.toggle("on", s.id === id); }
+  async function tick() {
+    let s;
+    try { s = await (await fetch("/state")).json(); } catch { return; }
+    const key = JSON.stringify([s.mode, s.detail, s.ok, s.tx]);
+    if (key === last) return;
+    last = key;
+    clearTimeout(resetTimer);
+    if (s.mode === "idle") return show("s-entry");
+    if (s.mode === "pay" || s.mode === "register") {
+      const reading = /Reading|Almost/.test(s.detail || "");
+      $("tap-amount").innerHTML = s.mode === "pay" ? `${fmt(s.amount)} <span class="cur">tUSDC</span>` : `Code ${s.code}`;
+      $("tap-title").textContent = reading ? "Keep holding…" : s.mode === "pay" ? "Tap your card" : "Tap the card to link";
+      $("tap-sub").textContent = reading ? "Reading your card. Don't move it." : /Couldn't|tap again/.test(s.detail || "") ? "Couldn't read it. Hold the card flat on the reader and keep it still." : "Hold it flat on the reader until you're told to remove it";
+      $("tapmark").classList.toggle("busy", reading);
+      return show("s-tap");
+    }
+    if (s.mode === "waiting") { $("phone-sub").textContent = `${fmt(s.amount)} tUSDC · card read. You can remove the card now.`; return show("s-phone"); }
+    if (s.ok === true) {
+      $("paid-amount").innerHTML = s.amount ? `${fmt(s.amount)} <span class="cur" style="color:rgba(255,255,255,.8)">tUSDC</span>` : "Card linked";
+      $("paid-tx").textContent = s.tx ? "tx " + s.tx.slice(0, 18) + "…" + s.tx.slice(-6) : (s.detail || "");
+      show("s-paid");
+      resetTimer = setTimeout(cancel, 6000);
+      return;
+    }
+    if (s.ok === false) { $("declined-why").textContent = why(s); show("s-declined"); resetTimer = setTimeout(cancel, 9000); }
+  }
+  setInterval(tick, 300);
+  drawEntry();
+  tick();
 </script>
 </body>
 </html>
