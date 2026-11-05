@@ -250,7 +250,7 @@ class Terminal:
         from reader_i2c import CardError
         while True:
             if self.state["mode"] not in ("pay", "register") or not self.reader.card_present():
-                time.sleep(0.15)
+                time.sleep(0.05)
                 continue
             # Retry straight away while the card is still on the reader: no need to lift and re-tap.
             for attempt in range(5):
@@ -262,13 +262,15 @@ class Terminal:
                     break
                 except (CardError, OSError) as e:
                     err = e
-                    time.sleep(0.05)
+                    self.reader.release()
+                    self.reader.init()  # full chip reset so a stuck card can be woken again
                     if not self.reader.card_present(reset=True):
                         break
             else:
                 err = None
             if self.state["mode"] in ("pay", "register"):
                 self.set(detail="Couldn't read the card — hold it flat and still, then tap again")
+            self.reader.release()
             self._reset_tap()
             self.reader.wait_removed()
 

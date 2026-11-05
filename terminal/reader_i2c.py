@@ -114,10 +114,11 @@ class I2CReader:
     def init(self):
         self.wr(0x01, 0x0F)  # soft reset
         time.sleep(0.05)
-        for reg, val in ((0x12, 0x00), (0x13, 0x00), (0x24, 0x26), (0x15, 0x40), (0x11, 0x3D), (0x26, 0x70)):
+        # Tuned on the Pi with a real Mastercard (tune_reader.py): RxGain 33 dB + default threshold
+        # + max TX power read 3/3 in ~1.5 s at 100 kHz; a lower RX threshold (0x55) caused failures.
+        for reg, val in ((0x12, 0x00), (0x13, 0x00), (0x24, 0x26), (0x15, 0x40), (0x11, 0x3D), (0x26, 0x40), (0x18, 0x84)):
             self.wr(reg, val)
         self.set_power(0x3F)  # maximum transmitter power, always
-        self.wr(0x18, 0x55)   # RxThresholdReg: more receiver sensitivity (default 0x84)
         self._polls = 0
         self.wr(0x14, self.rd(0x14) | 0x03)  # antenna on
         self.version = self.rd(0x37)
@@ -129,11 +130,24 @@ class I2CReader:
         self.wr(0x29, level)  # ModGsPReg
 
     def field_reset(self):
+        """Turn the RF field off long enough that the card really loses power and restarts.
+        (10 ms isn't enough: a card left mid-transaction then ignores every wake-up request.)"""
         t = self.rd(0x14)
         self.wr(0x14, t & ~0x03)
-        time.sleep(0.01)
+        time.sleep(0.06)
         self.wr(0x14, t | 0x03)
-        time.sleep(0.01)
+        time.sleep(0.015)
+
+    def release(self):
+        """Politely end the session (DESELECT, then HALT) so the card can be woken again."""
+        try:
+            self.xfer(with_crc(b"\xC2"), timeout_ms=20)
+        except OSError:
+            pass
+        try:
+            self.xfer(with_crc(b"\x50\x00"), timeout_ms=5)
+        except OSError:
+            pass
 
     def set_timeout(self, ms):
         if ms <= 1600:
