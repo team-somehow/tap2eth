@@ -67,6 +67,7 @@ static bool rcInit() {
   wr(0x01, 0x0F); delay(50);
   wr(0x12, 0x00); wr(0x13, 0x00); wr(0x24, 0x26);
   wr(0x15, 0x40); wr(0x11, 0x3D); wr(0x26, 0x70);
+  wr(0x28, 0x30); wr(0x29, 0x30);  // polling power: a step above default (0x20)
   uint8_t t = rd(0x14); wr(0x14, t | 0x03);
   uint8_t ver = rd(0x37);
   Serial.printf("Reader version reg: 0x%02X\n", ver);
@@ -407,7 +408,7 @@ void loop() {
   Serial.printf("Card detected: ATQA=%02X%02X\n", atqa[0], atqa[1]);
   show(TFT_YELLOW, "Reading card...", "Hold it flat and still");
   runTest();
-  wr(0x28, 0x20); wr(0x29, 0x20);  // back to default for polling
+  wr(0x28, 0x30); wr(0x29, 0x30);  // polling power: a step above default (0x20)
   for (int miss = 0; miss < 3;) { delay(200); fieldReset(); uint8_t a[2]; if (wupa(a)) miss = 0; else miss++; }
   Serial.println("Card removed. Tap again to retest.");
 }
