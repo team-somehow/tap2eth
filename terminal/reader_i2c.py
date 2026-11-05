@@ -94,6 +94,7 @@ class I2CReader:
         self.fd = os.open(f"/dev/i2c-{bus}", os.O_RDWR)
         fcntl.ioctl(self.fd, I2C_SLAVE, addr)
         self.fsc, self.fwt_ms, self.bn = 32, 50, 0
+        self.fsdi = 4  # frame size we accept from the card: 4 = 48 bytes, 2 = 32 bytes
         self.init()
 
     # ---------------------------------------------------------------- registers
@@ -175,7 +176,7 @@ class I2CReader:
             irq = self.rd(0x04)
             if irq & 0x30:
                 break
-            if irq & 0x01 or time.monotonic() - t0 > timeout_ms / 1000 + 0.3:
+            if irq & 0x01 or time.monotonic() - t0 > timeout_ms / 1000 + 0.1:
                 self.wr(0x0D, 0)
                 return None
             if irq & 0x40:  # sent; drain FIFO during long receptions
@@ -214,7 +215,7 @@ class I2CReader:
         if not sak & 0x20:
             raise CardError("not a payment card")
         for _ in range(3):  # RATS, FSDI=4 (48-byte frames)
-            ats = self.xfer(with_crc(b"\xE0\x40"), timeout_ms=200)
+            ats = self.xfer(with_crc(bytes([0xE0, self.fsdi << 4])), timeout_ms=200)
             if ats and crc_ok(ats):
                 break
         else:
@@ -243,8 +244,9 @@ class I2CReader:
             return None
         return r[:-2]
 
-    def apdu(self, cmd):
-        max_inf, to, off = min(self.fsc, 64) - 3, 1500, 0
+    def apdu(self, cmd, timeout_ms=None):
+        # Wait about 3x the card's own frame-wait time; it sends WTX if it needs longer.
+        max_inf, to, off = min(self.fsc, 64) - 3, timeout_ms or max(self.fwt_ms * 3, 120), 0
         while True:  # send, chaining if needed
             chunk = cmd[off:off + max_inf]
             more = off + len(chunk) < len(cmd)
@@ -306,7 +308,8 @@ class I2CReader:
 
     def internal_authenticate(self, challenge_hex):
         """The card signs our 4-byte challenge (EMV DDA). Returns the signature bytes."""
-        d, sw = self.apdu(b"\x00\x88\x00\x00\x04" + bytes.fromhex(challenge_hex) + b"\x00")
+        # RSA signing is slow on the card: give this one command a long wait.
+        d, sw = self.apdu(b"\x00\x88\x00\x00\x04" + bytes.fromhex(challenge_hex) + b"\x00", timeout_ms=1500)
         if sw != 0x9000:
             raise CardError("the card refused to sign")
         if d[0] == 0x80:

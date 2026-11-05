@@ -249,6 +249,9 @@ class Terminal:
         """Poll the Pi-attached reader; only talk to cards when the merchant is charging/registering."""
         from reader_i2c import CardError
         while True:
+            if os.path.exists("/tmp/tap2eth-pause"):  # reader tests (tune_reader.py) running
+                time.sleep(0.5)
+                continue
             if self.state["mode"] not in ("pay", "register") or not self.reader.card_present():
                 time.sleep(0.05)
                 continue
@@ -310,6 +313,8 @@ class Terminal:
                     return
         except Exception as e:  # noqa: BLE001
             print(f"payment step failed: {e}", flush=True)
+            if self.reader is not None and type(e).__name__ in ("CardError", "OSError"):
+                raise  # card hiccup while signing: let run_i2c retry while the card is still there
             self.write("SKIP")
             if self.state["mode"] in ("pay", "register", "waiting"):
                 self.set(detail=f"{e}", ok=None if "tap again" in str(e) else False,
