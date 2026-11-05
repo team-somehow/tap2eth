@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tap2ETH Terminal</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #020617; color: #f8fafc; height: 100vh; display: flex; }
+    #left { flex: 1.2; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 24px; text-align: center; }
+    #right { flex: 1; background: #0f172a; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+    #screen { font-size: 46px; font-weight: 800; }
+    #detail { font-size: 22px; color: #94a3b8; margin-top: 12px; min-height: 30px; }
+    #tx { font-size: 13px; color: #93c5fd; margin-top: 10px; word-break: break-all; }
+    .ok #screen { color: #4ade80; } .bad #screen { color: #f87171; }
+    input { font-size: 34px; padding: 10px; border-radius: 12px; border: 0; width: 100%; text-align: right; background: #1e293b; color: white; }
+    .keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    button { font-size: 24px; padding: 14px; border-radius: 12px; border: 0; background: #334155; color: white; cursor: pointer; }
+    .go { background: #22c55e; color: #052e16; font-weight: 700; }
+    .alt { background: #1d4ed8; font-size: 18px; }
+    .cancel { background: #7f1d1d; font-size: 18px; }
+    .brand { color: #64748b; font-size: 14px; margin-bottom: 30px; letter-spacing: 2px; }
+    .nfc { font-size: 70px; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <div id="left">
+    <div class="brand">TAP2ETH · MERCHANT TERMINAL</div>
+    <div class="nfc" id="icon">💳</div>
+    <div id="screen">Ready</div>
+    <div id="detail"></div>
+    <div id="tx"></div>
+  </div>
+  <div id="right">
+    <input id="amount" placeholder="0.00" inputmode="decimal" />
+    <div class="keys" id="keys"></div>
+    <button class="go" id="charge">Charge</button>
+    <button class="alt" id="register">Register a card</button>
+    <button class="cancel" id="cancel">Cancel</button>
+  </div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  for (const k of ["1","2","3","4","5","6","7","8","9",".","0","⌫"]) {
+    const b = document.createElement("button"); b.textContent = k;
+    b.onclick = () => { const a = $("amount"); a.value = k === "⌫" ? a.value.slice(0, -1) : a.value + k; };
+    $("keys").appendChild(b);
+  }
+  const post = (p, body) => fetch(p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+  $("charge").onclick = () => { const v = $("amount").value; if (Number(v) > 0) post("/pay", { amount: v }); };
+  $("register").onclick = () => { const c = prompt("Code shown on the customer's phone:"); if (c) post("/register", { code: c.trim() }); };
+  $("cancel").onclick = () => { $("amount").value = ""; post("/cancel"); };
+  async function tick() {
+    try {
+      const s = await (await fetch("/state")).json();
+      $("screen").textContent = s.screen; $("detail").textContent = s.detail || "";
+      $("tx").textContent = s.tx ? "tx " + s.tx : "";
+      document.body.className = s.ok === true ? "ok" : s.ok === false ? "bad" : "";
+      $("icon").textContent = s.ok === true ? "✅" : s.ok === false ? "❌" : s.mode === "waiting" ? "📱" : "💳";
+    } catch {}
+  }
+  setInterval(tick, 500); tick();
+</script>
+</body>
+</html>

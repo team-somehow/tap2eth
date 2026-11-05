@@ -3,3 +3,9 @@
 __pycache__/
 capk.txt
 *.bin
+node_modules/
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+relayer/state.json
+*.log

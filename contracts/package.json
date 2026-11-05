@@ -1,0 +1,9 @@
+{
+  "name": "tap2eth-contracts",
+  "private": true,
+  "scripts": {
+    "build": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node --hostname 0.0.0.0"
+  }
+}

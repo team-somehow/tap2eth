@@ -229,6 +229,7 @@ static void runTest() {
   const uint8_t* aid; size_t al;
   if (!tlvFind(r, n - 2, 0x4F, &aid, &al)) { Serial.println("FAIL: no AID in PPSE"); Serial.println("=== TEST END ==="); return; }
   Serial.print("AID: "); for (size_t i = 0; i < al; i++) Serial.printf("%02X", aid[i]); Serial.println();
+  raw("AID", aid, al);
   uint8_t sel[32] = {0x00, 0xA4, 0x04, 0x00, (uint8_t)al}; memcpy(sel + 5, aid, al); sel[5 + al] = 0;
   n = apdu(sel, 6 + al, r, sizeof r);
   Serial.printf("SELECT AID: len=%d SW=%04X\n", n, sw(r, n));
@@ -280,6 +281,29 @@ static void runTest() {
   }
 
   bool iaSig = false, cdaSig = false;
+  // Terminal mode: hand the card data to the host, then wait for the challenge to sign.
+  Serial.println("READY");
+  bool haveChal = false;
+  {
+    String line; uint32_t t0 = millis();
+    while (millis() - t0 < 8000) {
+      while (Serial.available()) {
+        char ch = Serial.read();
+        if (ch == '\n') {
+          line.trim();
+          if (line.startsWith("CHAL ") && line.length() >= 13) {
+            for (int i = 0; i < 4; i++) UN[i] = strtoul(line.substring(5 + 2 * i, 7 + 2 * i).c_str(), nullptr, 16);
+            haveChal = true;
+          }
+          if (line == "SKIP" || haveChal) goto gotLine;
+          line = "";
+        } else line += ch;
+      }
+      delay(2);
+    }
+  }
+gotLine:
+  if (!haveChal) { Serial.println("NOCHAL"); Serial.println("=== TEST END ==="); return; }
   // INTERNAL AUTHENTICATE (DDA)
   {
     uint8_t ia[64] = {0x00, 0x88, 0x00, 0x00, 0}; size_t dl;
@@ -288,6 +312,7 @@ static void runTest() {
     raw("DDOLDATA", ia + 5, dl);
     n = apdu(ia, 6 + dl, r, sizeof r);
     if (n > 2) raw("IA", r, n - 2);
+    if (n > 2 && sw(r, n) == 0x9000) Serial.println("SIGNED"); else Serial.println("SIGFAIL");
     Serial.printf("INTERNAL AUTHENTICATE: len=%d SW=%04X", n, sw(r, n));
     if (n > 2 && sw(r, n) == 0x9000) {
       if (r[0] == 0x80) { size_t L = r[1] & 0x80 ? r[2] : r[1]; Serial.printf(" SIGNATURE %u bytes", (unsigned)L); iaSig = true; }
@@ -295,8 +320,8 @@ static void runTest() {
     }
     Serial.println();
   }
-  // GENERATE AC with CDA requested (ARQC + CDA)
-  if (c1l) {
+  // GENERATE AC with CDA requested (ARQC + CDA) — disabled: times out on the RFID 2 reader
+  if (false && c1l) {
     static uint8_t g[120] = {0x80, 0xAE, 0x90, 0x00, 0};
     size_t dl = buildDol(cdol1, c1l, g + 5);
     g[4] = dl; g[5 + dl] = 0;
