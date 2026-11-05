@@ -3,74 +3,110 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0f172a" />
+  <meta name="theme-color" content="#EEF1F5" />
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
   <title>Tap2ETH</title>
-  <style>
-    :root { --bg:#0f172a; --card:#1e293b; --fg:#f1f5f9; --muted:#94a3b8; --accent:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--fg); }
-    main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
-    h1 { font-size: 22px; margin: 4px 0 16px; }
-    .box { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 14px; }
-    .muted { color: var(--muted); font-size: 14px; }
-    .big { font-size: 34px; font-weight: 700; }
-    .code { font-size: 48px; letter-spacing: 10px; font-weight: 800; text-align: center; margin: 10px 0; }
-    button { width: 100%; border: 0; border-radius: 12px; padding: 14px; font-size: 17px; font-weight: 600; margin-top: 10px; cursor: pointer; }
-    .primary { background: var(--accent); color: #052e16; }
-    .secondary { background: #334155; color: var(--fg); }
-    .danger { background: var(--bad); color: white; }
-    .row { display:flex; justify-content: space-between; margin: 6px 0; }
-    .pill { display:inline-block; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
-    .ok { background:#14532d; color:#bbf7d0; } .frozen { background:#7f1d1d; color:#fecaca; }
-    .pay { border: 2px solid var(--warn); }
-    a { color: #93c5fd; word-break: break-all; }
-    .hidden { display: none; }
-    #err { color: #fca5a5; white-space: pre-wrap; }
-  </style>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main>
-    <h1>💳 Tap2ETH</h1>
+  <main id="app">
 
-    <section id="view-welcome" class="hidden">
-      <div class="box">
-        <p><b>Your bank card is your crypto wallet.</b></p>
-        <p class="muted">Every payment needs two things: a tap of your card on the merchant terminal, and your fingerprint on this phone.</p>
-        <button class="primary" id="btn-create">Create wallet</button>
+    <!-- Onboarding -->
+    <section id="view-welcome" class="view" hidden>
+      <div class="hero-art" aria-hidden="true">
+        <div class="mini-card"><span class="chip"></span><span class="wave"></span></div>
+        <div class="plus">+</div>
+        <div class="mini-phone"><span class="print"></span></div>
       </div>
+      <h1 class="display">Your bank card is now your crypto wallet</h1>
+      <p class="lede">Pay in stablecoins by tapping the card you already carry. No seed phrase, no new card.</p>
+      <ul class="facts">
+        <li><b>Tap your card</b> at the merchant terminal to start a payment.</li>
+        <li><b>Confirm with your fingerprint</b> on this phone to send it.</li>
+        <li><b>Neither works alone.</b> A lost card or a lost phone can't spend your money.</li>
+      </ul>
+      <button class="btn primary" id="btn-create">Create wallet</button>
+      <p class="fine">Creates a passkey on this phone. It never leaves the phone's secure chip.</p>
     </section>
 
-    <section id="view-link" class="hidden">
-      <div class="box">
-        <p>Passkey created ✅</p>
-        <p>Now go to the terminal, choose <b>Register card</b>, type this code and tap your card:</p>
-        <div class="code" id="link-code">----</div>
-        <p class="muted" id="link-status">Waiting for your card…</p>
-      </div>
+    <!-- Link card -->
+    <section id="view-link" class="view" hidden>
+      <p class="step-done">Passkey created on this phone</p>
+      <h1 class="display small">Now link your card</h1>
+      <ol class="steps">
+        <li>On the merchant terminal, choose <b>Register a card</b>.</li>
+        <li>Type this code:</li>
+      </ol>
+      <div class="code" id="link-code" aria-live="polite"></div>
+      <ol class="steps" start="3">
+        <li>Hold your bank card flat on the reader until it beeps.</li>
+      </ol>
+      <div class="status" id="link-status"><span class="spinner"></span><span>Waiting for your card</span></div>
+      <button class="btn ghost" id="btn-restart">Start over</button>
     </section>
 
-    <section id="view-home" class="hidden">
-      <div id="pending"></div>
-      <div class="box">
-        <div class="row"><span class="muted">Balance</span><span id="status-pill" class="pill ok">Active</span></div>
-        <div class="big"><span id="balance">–</span> <span class="muted">tUSDC</span></div>
-        <div class="row muted"><span>Per payment</span><span id="limit-tx">–</span></div>
-        <div class="row muted"><span>Daily limit</span><span id="limit-day">–</span></div>
-        <div class="row muted"><span>Spent today</span><span id="spent">–</span></div>
-        <p class="muted" style="margin-bottom:0">Wallet: <span id="addr"></span></p>
+    <!-- Home -->
+    <section id="view-home" class="view" hidden>
+      <header class="top">
+        <span class="brand">Tap2ETH</span>
+        <span class="state-tag" id="state-tag">Active</span>
+      </header>
+
+      <div class="card" id="card">
+        <div class="card-row"><span class="chip"></span><span class="wave"></span></div>
+        <div class="card-label">Linked bank card</div>
+        <div class="card-addr" id="card-addr">0x…</div>
+        <div class="frost" aria-hidden="true"><span>Frozen</span></div>
       </div>
-      <div class="box">
-        <b>Recent payments</b>
-        <div id="history" class="muted">None yet.</div>
+
+      <div class="balance">
+        <span class="amount" id="balance">–</span><span class="unit">tUSDC</span>
       </div>
-      <button class="danger" id="btn-freeze">🔒 Freeze wallet</button>
-      <button class="secondary" id="btn-reset">Forget this wallet on this phone</button>
+
+      <div class="meter" aria-label="Spent today">
+        <div class="meter-bar"><span id="meter-fill"></span></div>
+        <div class="meter-text"><span id="spent">0</span> of <span id="daily">–</span> spent today · up to <span id="pertx">–</span> per payment</div>
+      </div>
+
+      <h2 class="section-title">Activity</h2>
+      <ul class="activity" id="activity"><li class="empty">Tap your card at a terminal to make your first payment.</li></ul>
+
+      <button class="btn danger-outline" id="btn-freeze">Freeze wallet</button>
+      <p class="fine" id="frozen-note" hidden>Payments are blocked. To unfreeze you'll need both this phone and your card.</p>
+      <button class="link-btn" id="btn-forget">Remove wallet from this phone</button>
     </section>
 
-    <p id="err"></p>
+    <p class="toast" id="toast" role="status" hidden></p>
   </main>
+
+  <!-- Payment approval sheet -->
+  <div class="sheet-wrap" id="pay-sheet" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="pay-amount">
+      <div class="grabber"></div>
+      <p class="sheet-kicker">Card tapped at</p>
+      <p class="merchant" id="pay-merchant">Merchant</p>
+      <p class="sheet-amount"><span id="pay-amount">0.00</span> <span class="unit">tUSDC</span></p>
+      <p class="sheet-note" id="pay-note">Only confirm if you just tapped your card here.</p>
+      <button class="btn primary big" id="btn-approve"><span class="fp" aria-hidden="true"></span>Confirm with fingerprint</button>
+      <button class="btn ghost" id="btn-decline">Decline</button>
+    </div>
+  </div>
+
+  <!-- Freeze sheet -->
+  <div class="sheet-wrap" id="freeze-sheet" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="freeze-title">
+      <div class="grabber"></div>
+      <h2 class="sheet-title" id="freeze-title">Freeze this wallet?</h2>
+      <p class="sheet-note">All payments stop right away, even if someone has your card. Unfreezing needs this phone and your card together.</p>
+      <button class="btn danger big" id="btn-freeze-confirm">Freeze wallet</button>
+      <button class="btn ghost" id="btn-freeze-cancel">Keep it active</button>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>

@@ -16,13 +16,14 @@ function modPow(b, e, m) {
 }
 
 /** Fake card with a 1024-bit RSA key, exponent 3 — same shape as a real Mastercard DDA key. */
-function makeCard() {
-  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 1024, publicExponent: 3 });
+function makeCard(existingKey) {
+  const privateKey = existingKey || crypto.generateKeyPairSync("rsa", { modulusLength: 1024, publicExponent: 3 }).privateKey;
   const jwk = privateKey.export({ format: "jwk" });
   const n = Buffer.from(jwk.n, "base64url");
   const d = bufToBig(Buffer.from(jwk.d, "base64url"));
   const N = bufToBig(n);
   return {
+    privateKey,
     modulus: n,
     exponent: Buffer.from([3]),
     /** INTERNAL AUTHENTICATE: sign the 4-byte challenge like an EMV card does. */

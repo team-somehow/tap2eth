@@ -10,3 +10,4 @@ contracts/typechain-types/
 relayer/state.json
 *.log
 .npm-contracts.log
+relayer/scripts/.sim-card.json
