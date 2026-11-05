@@ -142,6 +142,17 @@ class Terminal:
     def set(self, **kw):
         with self.lock:
             self.state.update(kw)
+            s = dict(self.state)
+        # Mirror the status on the M5Stick's screen.
+        color = "G" if s["ok"] is True else "R" if s["ok"] is False else "B" if s["mode"] in ("register", "waiting") else "Y" if s["mode"] == "pay" else "W"
+        ascii_ = lambda t: "".join(ch for ch in str(t or "") if 32 <= ord(ch) < 127).replace("|", "/").strip()[:26]
+        l1, l2 = ascii_(s["screen"]), ascii_(s["detail"])
+        if s["mode"] == "waiting":
+            l1, l2 = "Approve on phone", f"{s['amount']} tUSDC"
+        try:
+            self.write(f"SHOW {color}|{l1 or 'Tap2ETH'}|{l2}")
+        except Exception:  # noqa: BLE001
+            pass
 
     def post(self, path, body=None):
         req = urllib.request.Request(self.relayer + path, data=json.dumps(body or {}).encode() if body is not None else None,

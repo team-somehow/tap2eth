@@ -2,6 +2,38 @@
 // Prints a masked summary over USB serial. Never prints PAN/track data/certs.
 #include <Arduino.h>
 #include <Wire.h>
+#include <M5Unified.h>
+
+// ---------- Screen: big status text so people can see what the terminal is doing ----------
+static void show(uint16_t color, const char* l1, const char* l2 = "") {
+  auto& d = M5.Display;
+  d.fillScreen(TFT_BLACK);
+  d.fillRect(0, 0, d.width(), 6, color);
+  d.setTextDatum(middle_center);
+  d.setTextColor(color, TFT_BLACK);
+  d.setFont(&fonts::FreeSansBold12pt7b);
+  d.drawString(l1, d.width() / 2, d.height() / 2 - 12);
+  d.setTextColor(TFT_WHITE, TFT_BLACK);
+  d.setFont(&fonts::FreeSans9pt7b);
+  d.drawString(l2, d.width() / 2, d.height() / 2 + 20);
+}
+// Host command: "SHOW <G|R|Y|B|W>|line 1|line 2"
+static void handleShow(const String& line) {
+  int a = line.indexOf('|'), b = line.indexOf('|', a + 1);
+  if (a < 0) return;
+  char c = line.charAt(5);
+  uint16_t col = c == 'G' ? TFT_GREEN : c == 'R' ? TFT_RED : c == 'Y' ? TFT_YELLOW : c == 'B' ? TFT_CYAN : TFT_WHITE;
+  String l1 = line.substring(a + 1, b < 0 ? line.length() : b), l2 = b < 0 ? "" : line.substring(b + 1);
+  show(col, l1.c_str(), l2.c_str());
+}
+static String hostLine;
+static void pollHost() {
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if (ch == '\n') { hostLine.trim(); if (hostLine.startsWith("SHOW ")) handleShow(hostLine); hostLine = ""; }
+    else hostLine += ch;
+  }
+}
 
 static uint8_t RC = 0x28;
 
@@ -283,6 +315,7 @@ static void runTest() {
   bool iaSig = false, cdaSig = false;
   // Terminal mode: hand the card data to the host, then wait for the challenge to sign.
   Serial.println("READY");
+  show(TFT_CYAN, "Card read", "Hold still...");
   bool haveChal = false;
   {
     String line; uint32_t t0 = millis();
@@ -291,9 +324,11 @@ static void runTest() {
         char ch = Serial.read();
         if (ch == '\n') {
           line.trim();
+          if (line.startsWith("SHOW ")) { handleShow(line); line = ""; continue; }
           if (line.startsWith("CHAL ") && line.length() >= 13) {
             for (int i = 0; i < 4; i++) UN[i] = strtoul(line.substring(5 + 2 * i, 7 + 2 * i).c_str(), nullptr, 16);
             haveChal = true;
+            show(TFT_CYAN, "Signing...", "Hold the card still");
           }
           if (line == "SKIP" || haveChal) goto gotLine;
           line = "";
@@ -342,26 +377,35 @@ gotLine:
 }
 
 void setup() {
+  auto cfg = M5.config();
+  cfg.output_power = true;   // Grove 5V for the RFID reader
+  M5.begin(cfg);
+  M5.Display.setRotation(1);
+  M5.Display.setBrightness(160);
+  show(TFT_WHITE, "Tap2ETH", "Starting...");
   Serial.begin(115200);
   delay(1500);
   Serial.println("\nBoot: card test firmware");
-  enableGrovePower();
+  // Grove 5V is switched on by M5.begin() (cfg.output_power) — M5Unified owns the internal I2C bus.
   Wire.begin(9, 10, 400000);
   Serial.print("Grove I2C scan:");
   int found = 0;
   for (uint8_t a = 8; a < 0x78; a++) { Wire.beginTransmission(a); if (Wire.endTransmission() == 0) { Serial.printf(" 0x%02X", a); found++; } }
   Serial.println(found ? "" : " none");
-  if (!rcInit()) Serial.println("Reader NOT responding at 0x28");
-  else Serial.println("Reader OK. Tap card...");
+  if (!rcInit()) { Serial.println("Reader NOT responding at 0x28"); show(TFT_RED, "No reader", "Check the RFID cable"); }
+  else { Serial.println("Reader OK. Tap card..."); show(TFT_WHITE, "Tap2ETH", "Ready"); }
 }
 
 void loop() {
+  M5.update();
+  pollHost();
   static uint32_t lastBeat = 0;
   if (millis() - lastBeat > 5000) { lastBeat = millis(); Serial.println("waiting for card..."); }
   uint8_t atqa[2];
   fieldReset();
   if (!wupa(atqa)) { delay(150); return; }
   Serial.printf("Card detected: ATQA=%02X%02X\n", atqa[0], atqa[1]);
+  show(TFT_YELLOW, "Reading card...", "Hold it flat and still");
   runTest();
   wr(0x28, 0x20); wr(0x29, 0x20);  // back to default for polling
   for (int miss = 0; miss < 3;) { delay(200); fieldReset(); uint8_t a[2]; if (wupa(a)) miss = 0; else miss++; }

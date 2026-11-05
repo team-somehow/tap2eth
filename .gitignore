@@ -11,3 +11,4 @@ relayer/state.json
 *.log
 .npm-contracts.log
 relayer/scripts/.sim-card.json
+relayer/scripts/.fake-phone.json
