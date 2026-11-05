@@ -259,7 +259,7 @@ class I2CReader:
                 raise CardError("card moved away — hold it still")
             if more:
                 if (r[0] & 0xF6) != 0xA2:
-                    raise CardError("card protocol error")
+                    raise CardError(f"card protocol error (expected R(ACK), got 0x{r[0]:02X})")
                 self.bn ^= 1
                 off += len(chunk)
                 continue
@@ -267,7 +267,7 @@ class I2CReader:
         resp = b""
         while True:  # receive, acknowledging chained blocks
             if (r[0] & 0xE2) != 0x02:
-                raise CardError("card protocol error")
+                raise CardError(f"card protocol error (got block 0x{r[0]:02X}, len {len(r)}, bn {self.bn})")
             if (r[0] & 1) == self.bn:
                 self.bn ^= 1
             resp += r[1:]

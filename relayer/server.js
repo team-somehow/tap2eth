@@ -202,6 +202,11 @@ app.post("/api/pay/:id/card", (req, res) => {
   const p = payments.get(req.params.id);
   if (!p) return res.status(404).json({ error: "unknown payment" });
   p.cardSig = hex(req.body.cardSig);
+  // Only the newest tap is approvable: older requests for this wallet are superseded,
+  // so the phone never shows a stale sale first.
+  for (const q of payments.values()) {
+    if (q !== p && q.wallet === p.wallet && q.status === "waiting_for_phone") q.status = "superseded";
+  }
   p.status = "waiting_for_phone";
   res.json({ status: p.status });
 });
