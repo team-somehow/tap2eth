@@ -53,6 +53,8 @@ async function setup() {
   console.log(`chain ${chainKey}  factory ${s.factory}  token ${s.token}  merchant ${MERCHANT}`);
 }
 
+// An idle local chain's last block can be hours old; the next block uses the real clock.
+const chainNow = async () => Math.max((await provider.getBlock("latest")).timestamp, Math.floor(Date.now() / 1000));
 const walletAt = (a) => new ethers.Contract(a, WalletArt.abi, relayer);
 const hex = (b) => (b.startsWith("0x") ? b : "0x" + b);
 
@@ -153,7 +155,7 @@ app.post("/api/signup", async (req, res) => {
 app.post("/api/unfreeze/start", async (req, res) => {
   try {
     const w = walletAt(req.body.wallet);
-    const expiry = (await provider.getBlock("latest")).timestamp + PAYMENT_TTL;
+    const expiry = (await chainNow()) + PAYMENT_TTL;
     const hash = await w.actionHash("unfreeze", "0x", await w.nonce(), expiry);
     const id = crypto.randomUUID();
     actions.set(id, { id, wallet: req.body.wallet, expiry, hash });
@@ -185,8 +187,7 @@ app.post("/api/pay/start", async (req, res) => {
     if (wallet === ethers.ZeroAddress) return res.status(404).json({ error: "card not registered" });
     const w = walletAt(wallet);
     const value = ethers.parseUnits(String(amount), 6);
-    const now = (await provider.getBlock("latest")).timestamp;
-    const expiry = now + PAYMENT_TTL;
+    const expiry = (await chainNow()) + PAYMENT_TTL;
     const nonce = await w.nonce();
     const h = await w.paymentHash(await token.getAddress(), MERCHANT, value, nonce, expiry);
     const id = crypto.randomUUID();
@@ -268,7 +269,7 @@ app.get("/api/wallet/:addr", async (req, res) => {
 app.post("/api/freeze/start", async (req, res) => {
   try {
     const w = walletAt(req.body.wallet);
-    const expiry = (await provider.getBlock("latest")).timestamp + PAYMENT_TTL;
+    const expiry = (await chainNow()) + PAYMENT_TTL;
     const hash = await w.actionHash("freeze", "0x", await w.nonce(), expiry);
     const id = crypto.randomUUID();
     actions.set(id, { id, wallet: req.body.wallet, expiry, hash });
