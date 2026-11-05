@@ -115,6 +115,65 @@ app.post("/api/register/:code/card", async (req, res) => {
   }
 });
 
+// --- phone-only signup (native app scans the card itself) ---------------------------------------
+
+const directChallenges = new Map(); // id -> challenge hex
+
+app.get("/api/signup/challenge", (req, res) => {
+  const id = crypto.randomUUID();
+  const challenge = crypto.randomBytes(4).toString("hex");
+  directChallenges.set(id, challenge);
+  res.json({ id, challenge });
+});
+
+app.post("/api/signup", async (req, res) => {
+  const { id, phoneX, phoneY, cardModulus, cardExponent, cardSig } = req.body || {};
+  const challenge = directChallenges.get(id);
+  directChallenges.delete(id);
+  try {
+    if (!challenge) throw new Error("signup expired, try again");
+    if (!verifyCardSig(cardModulus, cardExponent, challenge, cardSig)) throw new Error("card signature invalid");
+    const key = ethers.keccak256(hex(cardModulus));
+    let wallet = await factory.walletOf(key);
+    if (wallet !== ethers.ZeroAddress) {
+      const w = walletAt(wallet);
+      if ((await w.phoneX()) !== phoneX || (await w.phoneY()) !== phoneY) throw new Error("this card is already linked to another phone");
+      return res.json({ wallet, existing: true });
+    }
+    await (await factory.createWallet(hex(cardModulus), hex(cardExponent), phoneX, phoneY, PER_TX, DAILY)).wait();
+    wallet = await factory.walletOf(key);
+    await (await token.faucet(wallet, SIGNUP_GIFT)).wait();
+    res.json({ wallet });
+  } catch (e) {
+    res.status(400).json({ error: e.shortMessage || e.message });
+  }
+});
+
+// Unfreeze needs card + phone: the app scans the card (signs hash[0:4]) and the fingerprint signs the hash.
+app.post("/api/unfreeze/start", async (req, res) => {
+  try {
+    const w = walletAt(req.body.wallet);
+    const expiry = (await provider.getBlock("latest")).timestamp + PAYMENT_TTL;
+    const hash = await w.actionHash("unfreeze", "0x", await w.nonce(), expiry);
+    const id = crypto.randomUUID();
+    actions.set(id, { id, wallet: req.body.wallet, expiry, hash });
+    res.json({ id, hash, challenge: hash.slice(2, 10) });
+  } catch (e) {
+    res.status(400).json({ error: e.shortMessage || e.message });
+  }
+});
+
+app.post("/api/unfreeze/:id", async (req, res) => {
+  const a = actions.get(req.params.id);
+  if (!a) return res.status(404).json({ error: "unknown request" });
+  try {
+    const rc = await (await walletAt(a.wallet).unfreeze(a.expiry, hex(req.body.cardSig), req.body.phoneSig)).wait();
+    res.json({ status: "active", txHash: rc.hash });
+  } catch (e) {
+    res.status(400).json({ error: decodeError(e) });
+  }
+});
+
 // --- payments -----------------------------------------------------------------------------------
 
 // Terminal: merchant typed an amount and the customer tapped. Look up the card's wallet and
