@@ -35,6 +35,41 @@ Using our own M5StickS3 and an M5Stack RFID 2 reader, a real Indian-issued Maste
 No PIN was needed, and no bank or network was involved. The card number never left the
 reader's memory.
 
+## Deployed on Whitechain Sepolia (chain ID 1874)
+
+Explorer: https://explorer.testnet.whitechain.io · RPC: `https://rpc.testnet.whitechain.io`
+
+| Contract | Address | Source verified |
+|---|---|---|
+| `Tap2EthFactory` | [`0xBeC6E6382477263f17A90145a5c569264C153A76`](https://explorer.testnet.whitechain.io/address/0xBeC6E6382477263f17A90145a5c569264C153A76#code) | Yes |
+| `Tap2EthWallet` (smoke-test instance, throwaway fake card and passkey) | [`0x664BC373618b1c37ee0DF43903Fe7C871f62A076`](https://explorer.testnet.whitechain.io/address/0x664BC373618b1c37ee0DF43903Fe7C871f62A076#code) | Yes |
+| Relayer / deployer account (pays gas) | [`0x68d076aBe0E116856C0cB60f4f58ce59ccDaA265`](https://explorer.testnet.whitechain.io/address/0x68d076aBe0E116856C0cB60f4f58ce59ccDaA265) | n/a |
+
+Transactions: [factory deploy](https://explorer.testnet.whitechain.io/tx/0xf318d50013e7cb7282bf7fcc29ae3783cf42e0aacc5f5b6ee9f4d73d7b4cb114), [wallet creation](https://explorer.testnet.whitechain.io/tx/0x107a4363e2f0da284e28d5f29d95db572bec28b8dbe1d1e0fa8424a025fcadd4).
+
+Smoke test on the live chain (`contracts/scripts/smoke.js`): the on-chain card check (RSA via the modexp
+precompile plus SHA-1) and the phone check (WebAuthn P-256 via the P-256 precompile) both return true for
+valid signatures and false for wrong ones.
+
+| Measured on Whitechain Sepolia | Gas |
+|---|---|
+| Deploy factory | 2,902,062 |
+| Create a wallet | 2,566,689 |
+| `verifyCard` (RSA + SHA-1) | 151,139 |
+| `verifyPhone` (P-256) | 62,716 |
+
+Status and limits:
+- A real payment in the track USDT (`0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7`) has **not** been made yet. That token can only be minted by its owner, so we need test USDT from the organisers. The relayer and app still point at our own `TestUSDC`, which does not count for the track.
+- The smoke-test wallet uses a generated fake card, not a real bank card.
+
+Deploy it yourself (needs a funded key in `relayer/.env`, git-ignored; see `WALLETS.md`):
+```bash
+cd contracts && npm install
+npx hardhat run scripts/deploy.js --network whitechainSepolia      # writes deployments/1874.json
+npx hardhat run scripts/smoke.js --network whitechainSepolia
+npx hardhat verify --network whitechainSepolia <factory address>
+```
+
 ## What we're building
 
 | Part | Hardware / stack | Job |
