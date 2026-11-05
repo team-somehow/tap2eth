@@ -9,3 +9,4 @@ contracts/cache/
 contracts/typechain-types/
 relayer/state.json
 *.log
+.npm-contracts.log
