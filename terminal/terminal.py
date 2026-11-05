@@ -258,17 +258,20 @@ class Terminal:
                 try:
                     card = self.reader.read_card()
                     self.aid, self.gpo, self.recs = card["aid"], card["gpo"], card["recs"]
+                    t_read = time.monotonic()
                     self.on_card(self.reader.internal_authenticate)
+                    print(f"card handled in attempt {attempt + 1}", flush=True)
                     break
                 except (CardError, OSError) as e:
                     err = e
+                    print(f"read attempt {attempt + 1} failed: {e}", flush=True)
                     self.reader.release()
                     self.reader.init()  # full chip reset so a stuck card can be woken again
                     if not self.reader.card_present(reset=True):
                         break
             else:
                 err = None
-            if self.state["mode"] in ("pay", "register"):
+            if self.state["mode"] in ("pay", "register") and self.state["ok"] is None:
                 self.set(detail="Couldn't read the card — hold it flat and still, then tap again")
             self.reader.release()
             self._reset_tap()
@@ -306,6 +309,7 @@ class Terminal:
                     self.set(mode="done", screen="Declined ✗", detail=p.get("error") or p["status"], ok=False)
                     return
         except Exception as e:  # noqa: BLE001
+            print(f"payment step failed: {e}", flush=True)
             self.write("SKIP")
             if self.state["mode"] in ("pay", "register", "waiting"):
                 self.set(detail=f"{e}", ok=None if "tap again" in str(e) else False,
