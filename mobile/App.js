@@ -271,7 +271,9 @@ function Home({ wallet, onForget }) {
 
       {toast && <View style={[s.toast, toast.bad && { backgroundColor: C.red }]}><Text style={s.toastText}>{toast.text}</Text></View>}
 
-      <Sheet visible={!!pay} onClose={() => !payBusy && decline()}>
+      {/* Closing the sheet (back button, tapping outside, or the fingerprint dialog taking focus)
+          must never decline the payment: only the Decline button does. */}
+      <Sheet visible={!!pay} onClose={() => {}}>
         {pay && (
           <>
             <Text style={s.soft}>Card tapped at</Text>
