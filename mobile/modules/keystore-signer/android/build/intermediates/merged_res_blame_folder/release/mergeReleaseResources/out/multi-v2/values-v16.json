@@ -1,0 +1,72 @@
+{
+    "logs": [
+        {
+            "outputFile": "expo.modules.keystoresigner.keystore-signer-release-7:/values-v16/values-v16.xml",
+            "map": [
+                {
+                    "source": "/Users/pettiboy/.gradle/caches/9.4.1/transforms/d39d56a44c3855ffbc3d7ad0e7ce59ff/transformed/appcompat-1.2.0/res/values-v16/values-v16.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endLines": "5",
+                        "endColumns": "12",
+                        "endOffsets": "223"
+                    },
+                    "to": {
+                        "startLines": "3",
+                        "startColumns": "4",
+                        "startOffsets": "121",
+                        "endLines": "6",
+                        "endColumns": "12",
+                        "endOffsets": "289"
+                    }
+                },
+                {
+                    "source": "/Users/pettiboy/.gradle/caches/9.4.1/transforms/1e09783df3e6d8e8997b260662991b5d/transformed/core-1.3.2/res/values-v16/values-v16.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "65",
+                        "endOffsets": "116"
+                    }
+                }
+            ]
+        },
+        {
+            "outputFile": "expo.modules.keystoresigner.keystore-signer-mergeReleaseResources-5:/values-v16/values-v16.xml",
+            "map": [
+                {
+                    "source": "/Users/pettiboy/.gradle/caches/9.4.1/transforms/d39d56a44c3855ffbc3d7ad0e7ce59ff/transformed/appcompat-1.2.0/res/values-v16/values-v16.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endLines": "5",
+                        "endColumns": "12",
+                        "endOffsets": "223"
+                    },
+                    "to": {
+                        "startLines": "3",
+                        "startColumns": "4",
+                        "startOffsets": "121",
+                        "endLines": "6",
+                        "endColumns": "12",
+                        "endOffsets": "289"
+                    }
+                },
+                {
+                    "source": "/Users/pettiboy/.gradle/caches/9.4.1/transforms/1e09783df3e6d8e8997b260662991b5d/transformed/core-1.3.2/res/values-v16/values-v16.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "65",
+                        "endOffsets": "116"
+                    }
+                }
+            ]
+        }
+    ]
+}

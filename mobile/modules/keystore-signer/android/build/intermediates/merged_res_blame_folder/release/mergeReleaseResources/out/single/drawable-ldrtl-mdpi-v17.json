@@ -1,0 +1,14 @@
+[
+    {
+        "merged": "expo.modules.keystoresigner.keystore-signer-release-7:/drawable-ldrtl-mdpi-v17/abc_ic_menu_cut_mtrl_alpha.png",
+        "source": "expo.modules.keystoresigner.keystore-signer-appcompat-1.2.0-4:/drawable-ldrtl-mdpi-v17/abc_ic_menu_cut_mtrl_alpha.png"
+    },
+    {
+        "merged": "expo.modules.keystoresigner.keystore-signer-release-7:/drawable-ldrtl-mdpi-v17/abc_spinner_mtrl_am_alpha.9.png",
+        "source": "expo.modules.keystoresigner.keystore-signer-appcompat-1.2.0-4:/drawable-ldrtl-mdpi-v17/abc_spinner_mtrl_am_alpha.9.png"
+    },
+    {
+        "merged": "expo.modules.keystoresigner.keystore-signer-release-7:/drawable-ldrtl-mdpi-v17/abc_ic_menu_copy_mtrl_am_alpha.png",
+        "source": "expo.modules.keystoresigner.keystore-signer-appcompat-1.2.0-4:/drawable-ldrtl-mdpi-v17/abc_ic_menu_copy_mtrl_am_alpha.png"
+    }
+]

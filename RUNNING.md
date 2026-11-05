@@ -1,5 +1,26 @@
 # Running the Tap2ETH demo
 
+**Verified end to end (6 Nov 2026):** wallet created on a Samsung S22 Ultra by scanning a real
+Mastercard over the phone's NFC plus fingerprint; then a 12 tUSDC payment at the M5Stick terminal
+(card tap) approved with the fingerprint, settled on-chain.
+
+## Native app (recommended): `mobile/`
+
+```bash
+cd mobile && npm install
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ANDROID_HOME=$HOME/Library/Android/sdk
+npx expo prebuild -p android && (cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a)
+adb install -r android/app/build/outputs/apk/release/app-release.apk
+adb reverse tcp:8787 tcp:8787    # phone reaches the relayer at localhost:8787 over USB
+```
+
+Signup happens on the phone: tap **Create wallet**, hold the bank card to the back of the phone,
+then use your fingerprint. Payment approvals, freeze, and unfreeze (card scan + fingerprint) are in
+the app too. The PWA below is the browser fallback (it can't read bank cards, so its signup links the
+card at the terminal instead).
+
+---
+
 Five pieces run together:
 
 | Piece | Where | Port |

@@ -1,0 +1,19 @@
+<lint-module
+    format="1"
+    dir="/Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android"
+    name=":keystore-signer"
+    type="LIBRARY"
+    maven="expo.modules.keystoresigner:keystore-signer:0.1.0"
+    agpVersion="9.2.1"
+    buildFolder="build"
+    bootClassPath="/Users/pettiboy/Library/Android/sdk/platforms/android-37.0/android.jar:/Users/pettiboy/Library/Android/sdk/build-tools/36.0.0/core-lambda-stubs.jar"
+    javaSourceLevel="17"
+    compileTarget="android-37.0"
+    neverShrinking="true"
+    highlightGradualR8Api="false">
+  <lintOptions
+      absolutePaths="true"
+      checkReleaseBuilds="true"
+      explainIssues="true"/>
+  <variant name="release"/>
+</lint-module>
