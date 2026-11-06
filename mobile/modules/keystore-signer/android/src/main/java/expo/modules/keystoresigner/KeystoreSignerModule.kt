@@ -44,7 +44,10 @@ class KeystoreSignerModule : Module() {
           .setDigests(KeyProperties.DIGEST_SHA256)
           .setUserAuthenticationRequired(true)
           .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
-          .setInvalidatedByBiometricEnrollment(true)
+          // false: adding or removing a fingerprint must not destroy the wallet's only phone key. A wallet
+          // with a dead phone key can't approve anything, and recovery needs a phone signature. The card is
+          // still required for every payment above the small phone-only limit (if that option is on).
+          .setInvalidatedByBiometricEnrollment(false)
           .build()
         KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").apply {
           initialize(spec)
