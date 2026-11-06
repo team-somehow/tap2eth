@@ -28,6 +28,9 @@ const DAILY_GAS_BUDGET = ethers.parseEther(process.env.DAILY_GAS_BUDGET || "0.5"
 const MERCHANT = process.env.MERCHANT_ADDRESS || "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"; // Hardhat account #1
 const MERCHANT_NAME = process.env.MERCHANT_NAME || "Tap2ETH Café";
 const RECOVERY_DELAY = Number(process.env.RECOVERY_DELAY || 86400);
+// Wallet creations and recoveries allowed per IP per hour. Generous by default so a hackathon demo (many sign-ups from
+// one laptop and one network) never hits it; set SIGNUP_LIMIT=10 on a public deployment.
+const SIGNUP_LIMIT = Number(process.env.SIGNUP_LIMIT || 1000);
 
 const art = (file, name) => JSON.parse(fs.readFileSync(path.join(ART, file, `${name}.json`)));
 const WalletArt = art("v2/Tap2EthV2.sol", "Tap2EthWalletV2");
@@ -132,6 +135,7 @@ async function send(contract, method, args) {
   await contract[method].staticCall(...args); // throws the contract's error without spending gas
   const rc = await (await contract[method](...args)).wait();
   gas.spent += rc.fee ?? 0n;
+  chainViews.clear(); // balances and settings changed
   return rc;
 }
 
@@ -191,7 +195,7 @@ app.get("/api/health", wrap(async (req, res) => {
 
 const signups = new Map(); // id -> { params, hash, created }
 
-app.post("/api/signup/start", limit("signup", 10, 3600_000), wrap(async (req, res) => {
+app.post("/api/signup/start", limit("signup", SIGNUP_LIMIT, 3600_000), wrap(async (req, res) => {
   const { phoneX, phoneY, cardModulus, cardExponent } = req.body || {};
   if (!/^0x[0-9a-fA-F]{64}$/.test(phoneX || "") || !/^0x[0-9a-fA-F]{64}$/.test(phoneY || "")) throw httpError(400, "bad phone key");
   const key = ethers.keccak256(hex(cardModulus));
@@ -210,7 +214,7 @@ app.post("/api/signup/start", limit("signup", 10, 3600_000), wrap(async (req, re
   res.json({ id, hash, challenge: hash.slice(2, 10) });
 }));
 
-app.post("/api/signup/:id", limit("signup-finish", 10, 3600_000), wrap(async (req, res) => {
+app.post("/api/signup/:id", limit("signup-finish", SIGNUP_LIMIT, 3600_000), wrap(async (req, res) => {
   const s = signups.get(req.params.id);
   signups.delete(req.params.id);
   if (!s || Date.now() - s.created > TTL * 1000) throw httpError(400, "Signup expired. Try again.");
@@ -340,6 +344,7 @@ async function actionHash(w, action, params, expiry) {
   switch (action) {
     case "freeze": return w.actionHash("freeze", "0x", expiry);
     case "unfreeze": return w.actionHash("unfreeze", "0x", expiry);
+    case "cancelPhoneRecovery": return w.actionHash("cancelPhoneRecovery", "0x", expiry);
     case "limits": return w.actionHash("limits", coder.encode(["uint256", "uint256"], [units(params.perTx), units(params.daily)]), expiry);
     case "soft": return w.actionHash("softLimit", coder.encode(["uint256", "bool"], [units(params.amount || 0), !!params.cardOnly]), expiry);
     case "addCard": return w.actionHash("addSigner", coder.encode(["uint8", "bytes32", "bytes32"], [0, ethers.keccak256(hex(params.cardModulus)), ethers.keccak256(hex(params.cardExponent))]), expiry);
@@ -360,13 +365,14 @@ async function finishAction(a, body) {
   const w = walletAt(a.wallet);
   const list = await signersOf(w);
   const cardId = body.cardModulus ? cardIdOf(list, body.cardModulus) : list.filter((s) => s.kind === KIND_CARD)[0]?.id;
-  const needCard = a.action !== "freeze";
+  const needCard = a.action !== "freeze" && a.action !== "cancelPhoneRecovery"; // a phone alone can freeze or cancel
   if (needCard && cardId === undefined) throw httpError(400, "That card isn't part of this wallet.");
   const base = needCard ? [cardEntry(cardId, body.cardSig)] : [];
   const p = a.params;
   const call = {
     freeze: ["freeze", (pe) => [a.expiry, sorted([...base, pe])]],
     unfreeze: ["unfreeze", (pe) => [a.expiry, sorted([...base, pe])]],
+    cancelPhoneRecovery: ["cancelPhoneRecovery", (pe) => [a.expiry, sorted([...base, pe])]],
     limits: ["setLimits", (pe) => [units(p.perTx), units(p.daily), a.expiry, sorted([...base, pe])]],
     soft: ["setSoftLimit", (pe) => [units(p.amount || 0), !!p.cardOnly, a.expiry, sorted([...base, pe])]],
     addCard: ["addSigner", (pe) => [KIND_CARD, hex(p.cardModulus), hex(p.cardExponent), a.expiry, sorted([...base, pe]), hex(body.newCardSig)]],
@@ -416,20 +422,157 @@ app.post("/api/unfreeze/:id", wrap(async (req, res) => {
   res.json({ status: "active", txHash: rc.hash });
 }));
 
+// --- lost phone: two cards (no phone signature) replace the phone after a delay -------------------
+
+const RECOVERY_TTL = 900; // seconds to tap two cards and confirm with the fingerprint
+const recoveries = new Map(); // id -> { wallet, x, y, expiry, hash, created }
+const isKey32 = (v) => /^0x[0-9a-fA-F]{64}$/.test(v || "");
+const phoneIsSigner = (list, x, y) => list.some((s) => s.kind !== KIND_CARD && s.a.toLowerCase() === x.toLowerCase() && s.b.toLowerCase() === y.toLowerCase());
+function ensureRecord(wallet) {
+  const rec = (state[chainKey].wallets[wallet] ||= { names: {}, history: [] });
+  if (!Array.isArray(rec.received)) rec.received = [];
+  save();
+}
+
+// The first card tapped on the new phone finds the wallet. Returns the 4-byte challenge for that card.
+app.post("/api/recover/start", limit("recover", SIGNUP_LIMIT, 3600_000), wrap(async (req, res) => {
+  const { cardModulus, phoneX, phoneY } = req.body || {};
+  if (!isKey32(phoneX) || !isKey32(phoneY)) throw httpError(400, "bad phone key");
+  const wallet = await factory.walletOf(ethers.keccak256(hex(cardModulus)));
+  if (wallet === ethers.ZeroAddress) throw httpError(404, "No wallet was found for this card.");
+  const w = walletAt(wallet);
+  const list = await signersOf(w);
+  ensureRecord(wallet);
+  if (phoneIsSigner(list, phoneX, phoneY)) return res.json({ existing: true, wallet }); // this phone is already a signer
+  if (list.filter((s) => s.kind === KIND_CARD).length < 2) {
+    throw httpError(400, "This wallet has only one card. Recovery needs two cards, so add a second card while you still have your phone.");
+  }
+  const pr = await w.phoneRecovery();
+  if (pr.readyAt > 0n) {
+    if (pr.x.toLowerCase() === phoneX.toLowerCase() && pr.y.toLowerCase() === phoneY.toLowerCase()) return res.json({ pending: true, wallet, readyAt: Number(pr.readyAt), now: await chainNow() });
+    throw httpError(409, "Another phone replacement is already waiting on this wallet.");
+  }
+  const expiry = (await chainNow()) + RECOVERY_TTL;
+  const hash = await w.phoneRecoveryHash(phoneX, phoneY, expiry);
+  const id = crypto.randomUUID();
+  recoveries.set(id, { wallet, x: phoneX, y: phoneY, expiry, hash, created: Date.now() });
+  res.json({ id, wallet, hash, challenge: hash.slice(2, 10), expiry, delay: Number(await w.recoveryDelay()) });
+}));
+
+// Anyone can finish a replacement once the delay has passed.
+app.post("/api/recover/finish", limit("recover-finish", 30, 60_000), wrap(async (req, res) => {
+  const { wallet } = req.body || {};
+  if (!ethers.isAddress(wallet) || !state[chainKey].wallets[wallet]) throw httpError(400, "bad wallet");
+  const rc = await send(walletAt(wallet), "executePhoneRecovery", []);
+  res.json({ status: "done", txHash: rc.hash });
+}));
+
+// Two different cards signed the same 4-byte challenge, and the new phone signed the full hash.
+app.post("/api/recover/:id", limit("recover-submit", SIGNUP_LIMIT, 3600_000), wrap(async (req, res) => {
+  const r = recoveries.get(req.params.id);
+  if (!r) throw httpError(404, "This recovery request expired. Start again.");
+  recoveries.delete(r.id);
+  if (Date.now() - r.created > RECOVERY_TTL * 1000) throw httpError(400, "Expired");
+  const { cards, phoneSig } = req.body || {};
+  if (!Array.isArray(cards) || cards.length < 2) throw httpError(400, "Two cards are needed.");
+  const w = walletAt(r.wallet);
+  const list = await signersOf(w);
+  const entries = cards.map((c) => {
+    const id = cardIdOf(list, c.cardModulus);
+    if (id === undefined) throw httpError(400, "One of those cards isn't part of this wallet.");
+    return cardEntry(id, c.cardSig);
+  });
+  if (new Set(entries.map((e) => e.id)).size < entries.length) throw httpError(400, "Use two different cards.");
+  const proof = phoneEntry(0, phoneSig).data;
+  const rc = await send(w, "proposePhoneRecovery", [r.x, r.y, r.expiry, sorted(entries), proof]);
+  const pr = await w.phoneRecovery();
+  res.json({ status: "waiting", wallet: r.wallet, readyAt: Number(pr.readyAt), now: await chainNow(), txHash: rc.hash });
+}));
+
+// Where is a replacement? Used by the new phone while it waits, and by the old phone to show a warning.
+app.get("/api/recover/status/:wallet", wrap(async (req, res) => {
+  const wallet = req.params.wallet;
+  if (!ethers.isAddress(wallet)) throw httpError(400, "bad wallet");
+  const { x, y } = req.query;
+  const w = walletAt(wallet);
+  const [pr, list, now] = await Promise.all([w.phoneRecovery(), signersOf(w), chainNow()]);
+  const pending = pr.readyAt > 0n;
+  res.json({
+    pending,
+    readyAt: Number(pr.readyAt),
+    now,
+    active: isKey32(x) && isKey32(y) ? phoneIsSigner(list, x, y) : false, // this phone is already a signer
+    mine: pending && isKey32(x) && isKey32(y) && pr.x.toLowerCase() === x.toLowerCase() && pr.y.toLowerCase() === y.toLowerCase(),
+  });
+}));
+
+// The old phone (if it still works) can cancel a replacement with its fingerprint alone.
+app.post("/api/recovery-cancel/start", limit("action", 30, 60_000), wrap(async (req, res) => {
+  const { wallet } = req.body || {};
+  if (!ethers.isAddress(wallet)) throw httpError(400, "bad wallet");
+  await startAction(req, res, "cancelPhoneRecovery", wallet);
+}));
+app.post("/api/recovery-cancel/:id", wrap(async (req, res) => {
+  const a = actions.get(req.params.id);
+  if (!a) throw httpError(404, "unknown request");
+  actions.delete(a.id);
+  const rc = await finishAction(a, req.body || {});
+  res.json({ status: "cancelled", txHash: rc.hash });
+}));
+
 // --- wallet view for the app -----------------------------------------------------------------
 
-const receivedCache = new Map(); // wallet -> { at, items }
-async function received(wallet, fromBlock) {
-  const c = receivedCache.get(wallet);
-  if (c && Date.now() - c.at < 15_000) return c.items;
-  const logs = await token.queryFilter(token.filters.Transfer(null, wallet), fromBlock || 0);
-  const items = [];
-  for (const l of logs.slice(-30)) {
-    const b = await provider.getBlock(l.blockNumber);
-    items.push({ id: `${l.transactionHash}:${l.index}`, kind: "received", merchantName: "Received", from: l.args[0] === ethers.ZeroAddress ? "Test deposit" : short(l.args[0]), amount: money(l.args[2]), status: "paid", time: b.timestamp * 1000, txHash: l.transactionHash });
+// Received money comes from the token's Transfer logs. Instead of looking it up on every request, one background
+// poll (every POLL_MS, about 10 blocks) reads everything since the last saved block, for all wallets at once, in
+// chunks the public RPC accepts. The wallet screen just reads what was saved.
+const TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
+const POLL_MS = Number(process.env.POLL_MS || 10_000);
+const LOG_CHUNK = 900; // public RPCs allow about 1,000 blocks per log query
+const MAX_CHUNKS = 40; // at most this many queries per poll while catching up
+const blockTimes = new Map();
+async function blockTime(n) {
+  if (!blockTimes.has(n)) blockTimes.set(n, (await provider.getBlock(n)).timestamp * 1000);
+  return blockTimes.get(n);
+}
+const receivedOf = (rec) => (rec && Array.isArray(rec.received) ? rec.received : []);
+
+async function pollTransfers() {
+  const st = state[chainKey];
+  const head = await provider.getBlockNumber();
+  const wallets = Object.keys(st.wallets);
+  if (st.scanned === undefined) {
+    // First run: start at the oldest wallet's creation block, or now if there are no wallets yet.
+    const starts = wallets.map((w) => st.wallets[w].createdBlock).filter((n) => n !== undefined);
+    st.scanned = (starts.length ? Math.min(...starts) : head) - 1;
   }
-  receivedCache.set(wallet, { at: Date.now(), items });
-  return items;
+  for (const w of wallets) if (!Array.isArray(st.wallets[w].received)) st.wallets[w].received = [];
+  let chunks = 0;
+  let dirty = false;
+  while (st.scanned < head && chunks++ < MAX_CHUNKS) {
+    const from = st.scanned + 1;
+    const to = Math.min(from + LOG_CHUNK - 1, head);
+    if (wallets.length) {
+      const logs = await provider.getLogs({ address: tokenAddr, topics: [TRANSFER_TOPIC, null, wallets.map((w) => ethers.zeroPadValue(w, 32))], fromBlock: from, toBlock: to });
+      for (const l of logs) {
+        const to_ = ethers.getAddress("0x" + l.topics[2].slice(26));
+        const rec = st.wallets[to_];
+        const id = `${l.transactionHash}:${l.index}`;
+        if (!rec || rec.received.some((x) => x.id === id)) continue;
+        const sender = ethers.getAddress("0x" + l.topics[1].slice(26));
+        rec.received.push({ id, kind: "received", merchantName: "Received", from: sender === ethers.ZeroAddress ? "Test deposit" : short(sender), amount: money(BigInt(l.data)), status: "paid", time: await blockTime(l.blockNumber), txHash: l.transactionHash });
+        rec.received = rec.received.slice(-30);
+        dirty = true;
+      }
+    }
+    st.scanned = to;
+  }
+  if (dirty || chunks > 1) save(); // the cursor itself is only written when something changed or after catching up
+}
+let pollFailures = 0;
+async function pollLoop() {
+  try { await pollTransfers(); pollFailures = 0; }
+  catch (e) { if (pollFailures++ % 6 === 0) console.log("transfer poll failed:", String(e.shortMessage || e.message).slice(0, 120)); }
+  setTimeout(pollLoop, POLL_MS);
 }
 
 function historyItem(p) {
@@ -441,17 +584,16 @@ function publicPayment(p) {
   return { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly, kind, to, merchant: to || MERCHANT, merchantName: kind === "send" ? short(to) : MERCHANT_NAME };
 }
 
-app.get("/api/wallet/:addr", wrap(async (req, res) => {
-  const addr = req.params.addr;
-  if (!ethers.isAddress(addr)) throw httpError(400, "bad wallet");
+// The chain reads behind the wallet screen (balance, limits, cards...) are cached for a few seconds, so many app polls
+// cost one set of RPC calls. If the RPC fails, the last good answer is returned marked `stale`, so the app keeps
+// showing data instead of an error. `?fresh=1` (pull to refresh) skips the cache. A successful transaction clears it.
+const VIEW_TTL = Number(process.env.VIEW_TTL_MS || 4000);
+const chainViews = new Map(); // wallet -> { at, data }
+
+async function readChainView(addr) {
   const w = walletAt(addr);
-  const rec = state[chainKey].wallets[addr] || { names: {}, history: [] };
-  const [balance, perTx, daily, spent, frozen, softLimit, softCardOnly, threshold, list] = await Promise.all([token.balanceOf(addr), w.perTxLimit(), w.dailyLimit(), spentToday(w), w.frozen(), w.softLimit(), w.softCardOnly(), w.threshold(), signersOf(w)]);
-  const pending = [...payments.values()].filter((p) => p.wallet.toLowerCase() === addr.toLowerCase() && p.kind !== "send" && p.status === "waiting_for_phone").map(publicPayment);
-  const history = [...(rec.history || []), ...(await received(addr, rec.createdBlock))].sort((x, y) => y.time - x.time).slice(0, 50);
-  res.json({
-    v2: true,
-    wallet: addr,
+  const [balance, perTx, daily, spent, frozen, softLimit, softCardOnly, threshold, list, pr] = await Promise.all([token.balanceOf(addr), w.perTxLimit(), w.dailyLimit(), spentToday(w), w.frozen(), w.softLimit(), w.softCardOnly(), w.threshold(), signersOf(w), w.phoneRecovery()]);
+  return {
     balance: money(balance),
     perTxLimit: money(perTx),
     dailyLimit: money(daily),
@@ -460,15 +602,46 @@ app.get("/api/wallet/:addr", wrap(async (req, res) => {
     softLimit: money(softLimit),
     softCardOnly,
     threshold: Number(threshold),
-    cards: list.filter((s) => s.kind === KIND_CARD).map((s) => ({ id: s.id, name: rec.names?.[s.id] || `Card ${s.id + 1}`, active: true })),
+    phoneRecovery: { pending: pr.readyAt > 0n, readyAt: Number(pr.readyAt) },
+    cardIds: list.filter((x) => x.kind === KIND_CARD).map((x) => x.id),
+  };
+}
+
+app.get("/api/wallet/:addr", wrap(async (req, res) => {
+  const addr = req.params.addr;
+  if (!ethers.isAddress(addr)) throw httpError(400, "bad wallet");
+  const rec = state[chainKey].wallets[addr] || { names: {}, history: [] };
+  let c = chainViews.get(addr);
+  let stale = false;
+  if (!c || req.query.fresh === "1" || Date.now() - c.at > VIEW_TTL) {
+    try {
+      c = { at: Date.now(), data: await readChainView(addr) };
+      chainViews.set(addr, c);
+    } catch (e) {
+      if (!c) throw e; // nothing cached yet: this is a real error
+      stale = true; // the RPC failed: keep showing the last good numbers
+    }
+  }
+  // Pending approvals and our own history live in memory, so they are always current.
+  const pending = [...payments.values()].filter((p) => p.wallet.toLowerCase() === addr.toLowerCase() && p.kind !== "send" && p.status === "waiting_for_phone").map(publicPayment);
+  const history = [...(rec.history || []), ...receivedOf(rec)].sort((x, y) => y.time - x.time).slice(0, 50);
+  const { cardIds, ...chain } = c.data;
+  res.json({
+    v2: true,
+    wallet: addr,
+    ...chain,
+    cards: cardIds.map((id) => ({ id, name: rec.names?.[id] || `Card ${id + 1}`, active: true })),
     pending,
     history,
     merchant: MERCHANT,
+    stale,
+    updatedAt: c.at,
   });
 }));
+
 
 app.get("/", (req, res) => res.type("text").send("Tap2ETH relayer v2. See /api/health."));
 
 setup()
-  .then(() => app.listen(PORT, "0.0.0.0", () => console.log(`relayer v2 on http://0.0.0.0:${PORT}`)))
+  .then(() => { pollLoop(); return app.listen(PORT, "0.0.0.0", () => console.log(`relayer v2 on http://0.0.0.0:${PORT}`)); })
   .catch((e) => { console.error("setup failed:", e.message); process.exit(1); });

@@ -5,7 +5,7 @@
 // Covers: create (proof of possession), receiving small random deposits, sending them out with both signatures,
 // adding a second card (2 of 3), paying with the second card, one-signature rejections, a 3-of-3 threshold,
 // the per-day spending limit being hit and then raised, card-only payments for tiny amounts (5-10),
-// phone-only freeze and a payment blocked while frozen, then unfreeze.
+// phone-only freeze and a payment blocked while frozen, then unfreeze, then a lost phone replaced by two cards.
 const fs = require("fs");
 const path = require("path");
 const { ethers } = require("hardhat");
@@ -193,6 +193,61 @@ async function main() {
   check("wallet is active again", (await wallet.frozen()) === false);
   await pay("Pay 2 after unfreezing", [C, P], U(2), friend);
   check("payments work again", true);
+
+  // ---------------------------------------------------------------- 9. lost phone, recovered with two cards
+  step("9. Lost phone: two cards (no phone signature) replace the phone after a delay");
+  const rcA = makeCard(), rcB = makeCard(), oldPhone = makePasskey(), newPhone = makePasskey();
+  const params2 = { cardModulus: rcA.modulus, cardExponent: rcA.exponent, phoneX: oldPhone.x, phoneY: oldPhone.y, perTxLimit: U(20), dailyLimit: U(30), recoveryDelay: 12 };
+  const hc = await factory.createHash(params2);
+  await (await factory.createWallet(params2, cardSig(rcA, hc), oldPhone.sign(hc))).wait();
+  const w2 = await ethers.getContractAt("Tap2EthWalletV2", await factory.walletOf(k(rcA.modulus)));
+  console.log("  wallet", await w2.getAddress());
+  const A = { kind: "card", obj: rcA, id: 0 }, OP = { kind: "phone", obj: oldPhone, id: 1 }, B = { kind: "card", obj: rcB, id: 2 };
+  {
+    const exp = (await now()) + 300;
+    const h = await w2.actionHash("addSigner", coder.encode(["uint8", "bytes32", "bytes32"], [0, k(rcB.modulus), k(rcB.exponent)]), exp);
+    await (await w2.addSigner(0, rcB.modulus, rcB.exponent, exp, sigs([A, OP], h), cardSig(rcB, h))).wait();
+  }
+  check("the wallet has two cards and a phone", (await w2.activeCount()) === 3n && (await w2.phoneCount()) === 1n);
+  await (await token.faucet(await w2.getAddress(), U(10))).wait();
+  const exp2 = (await now()) + 300;
+  const hr = await w2.phoneRecoveryHash(newPhone.x, newPhone.y, exp2);
+  const proof = coder.encode([PHONE_T], [newPhone.sign(hr)]);
+  try {
+    await w2.proposePhoneRecovery.staticCall(newPhone.x, newPhone.y, exp2, sigs([A], hr), proof);
+    check("one card alone cannot start a phone replacement", false);
+  } catch (e) {
+    check("one card alone cannot start a phone replacement", errName(e) === "NotEnoughCards", `-> ${errName(e)}`);
+  }
+  rc = await (await w2.proposePhoneRecovery(newPhone.x, newPhone.y, exp2, sigs([A, B], hr), proof)).wait();
+  gasRows.push(["Start phone replacement (2 cards, no phone)", rc.gasUsed]);
+  check("two cards started the replacement without any phone signature", (await w2.phoneRecovery()).readyAt > 0n);
+  try {
+    await w2.executePhoneRecovery.staticCall();
+    check("it cannot be finished before the delay", false);
+  } catch (e) {
+    check("it cannot be finished before the delay", errName(e) === "RecoveryNotReady", `-> ${errName(e)}`);
+  }
+  const readyAt = (await w2.phoneRecovery()).readyAt;
+  while ((await now()) < Number(readyAt)) await new Promise((r) => setTimeout(r, 3000));
+  rc = await (await w2.executePhoneRecovery()).wait();
+  gasRows.push(["Finish phone replacement", rc.gasUsed]);
+  check("after the delay the old phone is gone and the new phone is the only phone", (await w2.phoneCount()) === 1n && (await w2.activeCount()) === 3n);
+  {
+    const e1 = (await now()) + 300;
+    const h1 = await w2.paymentHash(tokenAddr, friend, U(1), await w2.nonce(), e1);
+    try {
+      await w2.pay.staticCall(tokenAddr, friend, U(1), e1, sigs([A, OP], h1));
+      check("the old phone can no longer approve payments", false);
+    } catch (e) {
+      check("the old phone can no longer approve payments", errName(e) === "UnknownSigner", `-> ${errName(e)}`);
+    }
+    const NP = { kind: "phone", obj: newPhone, id: 3 };
+    const e2 = (await now()) + 300;
+    const h2 = await w2.paymentHash(tokenAddr, friend, U(1), await w2.nonce(), e2);
+    rc = await (await w2.pay(tokenAddr, friend, U(1), e2, sigs([A, NP], h2))).wait();
+    check("the new phone with a card pays", true);
+  }
 
   // ---------------------------------------------------------------- summary
   console.log("\n== Gas on this network");

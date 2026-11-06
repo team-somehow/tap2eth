@@ -20,9 +20,12 @@ async function main() {
 
   const file = path.join(__dirname, "..", "deployments", `${chainId}.json`);
   const prev = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : {};
+  // Keep the previous v2 deployment in a history list instead of overwriting it.
+  const history = prev.v2History || [];
+  if (prev.factoryV2) history.push({ factoryV2: prev.factoryV2, walletImplementationV2: prev.walletImplementationV2, factoryV2Tx: prev.factoryV2Tx, deployedAt: prev.v2DeployedAt });
   fs.writeFileSync(
     file,
-    JSON.stringify({ ...prev, factoryV2: factoryAddr, walletImplementationV2: implAddr, factoryV2Tx: rc.hash, v2DeployedAt: new Date().toISOString() }, null, 2) + "\n",
+    JSON.stringify({ ...prev, factoryV2: factoryAddr, walletImplementationV2: implAddr, factoryV2Tx: rc.hash, v2DeployedAt: new Date().toISOString(), v2History: history }, null, 2) + "\n",
   );
   console.log(`saved ${path.relative(process.cwd(), file)}`);
 }

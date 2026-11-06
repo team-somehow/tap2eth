@@ -60,22 +60,27 @@ valid signatures and false for wrong ones.
 
 ### v2 contracts (multi-signer wallet)
 
-`contracts/contracts/v2/Tap2EthV2.sol`. v1 above is unchanged. v2 adds, with 28 tests (`contracts/test/Tap2EthV2.test.js`):
+`contracts/contracts/v2/Tap2EthV2.sol`. v1 above is unchanged. v2 adds, with 37 tests (`contracts/test/Tap2EthV2.test.js`):
 
 - **Daily and per-payment limits** on-chain, changed only with the full threshold of signatures (card + phone).
 - **Optional 1-of-2 for small payments:** payments up to `softLimit` need one signature. By default it must be the phone; a card alone is accepted only if `softCardOnly` is switched on.
 - **More signers, still 2 of N:** add cards or phones (up to 8). Adding needs `threshold` signatures from the existing signers *and* a signature from the new key. Threshold can be raised (2 to N), signers removed (never below the threshold or the last phone).
 - **At least one phone signature on every normal approval.** A card signs only 4 bytes of the payment hash, so two cards alone are never accepted.
 - **Time-locked card recovery** instead of v1's instant phone-only swap: the phone plus the new card start a replacement that takes effect after `recoveryDelay`, and any single signer can cancel it.
+- **Lost phone, recovered with two cards:** at least two different cards and the new phone start a replacement of the phone signer with no phone signature. It takes effect after `recoveryDelay`, any single signer can cancel it, and finishing it adds the new phone and removes the old ones. Each card signs one 4-byte piece of the request, so this is the demo-strength version; see the note below.
 - **Proof of possession at creation:** the card and the phone both sign the creation parameters, so nobody can register a card they don't hold. Wallets are cheap clones.
 
-| v2 on Whitechain Sepolia | Address | Source verified |
+| v2 on Whitechain Sepolia (latest, with two-card phone recovery) | Address | Source verified |
 |---|---|---|
-| `Tap2EthFactoryV2` | [`0xFB395D511b5dc33DE8488D936Ac8814166D95A61`](https://explorer.testnet.whitechain.io/address/0xFB395D511b5dc33DE8488D936Ac8814166D95A61#code) | Yes |
-| `Tap2EthWalletV2` (implementation) | [`0x76FDa4413bc97b338c6393C1621DFE4aab89f45C`](https://explorer.testnet.whitechain.io/address/0x76FDa4413bc97b338c6393C1621DFE4aab89f45C#code) | Yes |
-| Smoke-test wallet (fake cards, throwaway token), latest run | [`0xe6536C9C02A3f9EF2efb6C73772cd94D6C6E14f9`](https://explorer.testnet.whitechain.io/address/0xe6536C9C02A3f9EF2efb6C73772cd94D6C6E14f9) | Clone of the implementation |
+| `Tap2EthFactoryV2` | [`0x15571a053040dB029958Ee5527B72652964E7dcB`](https://explorer.testnet.whitechain.io/address/0x15571a053040dB029958Ee5527B72652964E7dcB#code) | Yes |
+| `Tap2EthWalletV2` (implementation) | [`0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1`](https://explorer.testnet.whitechain.io/address/0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1#code) | Yes |
+| Smoke-test wallet (fake cards, throwaway token), latest run | [`0x14d0617f1c7AEC1a848a3698045f4726BC3Fe2Ec`](https://explorer.testnet.whitechain.io/address/0x14d0617f1c7AEC1a848a3698045f4726BC3Fe2Ec) | Clone of the implementation |
 
-Live smoke test (`contracts/scripts/smokeV2.js`, run on Whitechain Sepolia, **29 of 29 checks passed**). It uses throwaway fake cards and a throwaway `TestUSDC`, not the track USDT. It covers:
+The earlier v2 deployment (without phone recovery, factory `0xFB395D511b5dc33DE8488D936Ac8814166D95A61`) is kept in `contracts/deployments/1874.json` under `v2History`.
+
+**v3 (written, tested, not deployed):** `contracts/contracts/v3/Tap2EthV3.sol` makes the same phone recovery stronger. Each card signs three 4-byte pieces of the request hash (12 bytes instead of 4) and the one-piece route is switched off. Reason: a card signs only 4 bytes, and the signatures a card made earlier (for example when it was added) are public on-chain. Someone holding one stolen card could look for a recovery request whose hash starts with the same 4 bytes as an old signature of the other card (about 2^32 tries) and sign it with the stolen card, so the second card never has to be present. Only the delay and the old phone's cancel would stop that. With three pieces that replay is not realistic. This analysis has not been independently reviewed.
+
+Live smoke test (`contracts/scripts/smokeV2.js`, run on Whitechain Sepolia, **36 of 36 checks passed** on the latest deployment). It uses throwaway fake cards and a throwaway `TestUSDC`, not the track USDT. It covers:
 - receiving two small random deposits (1 to 5) and sending them out with card + phone
 - adding a second card (2 of 3) and paying with card 2 + phone
 - one signature refused, two cards without the phone refused
@@ -83,10 +88,11 @@ Live smoke test (`contracts/scripts/smokeV2.js`, run on Whitechain Sepolia, **29
 - hitting the per-payment and daily limits, then raising them with both signatures
 - card-alone payments for tiny amounts (up to 10), and 11 with the card alone refused
 - freeze with the phone alone, payments blocked while frozen, unfreeze with card + phone
+- lost phone: one card alone cannot start a replacement, two cards can without a phone signature, it cannot finish before the delay, then the old phone is rejected and the new phone with a card pays
 
 | Measured on Whitechain Sepolia | Gas |
 |---|---|
-| Deploy v2 factory | 4,558,406 |
+| Deploy v2 factory (latest) | 5,060,414 |
 | Create a wallet (clone + 2 proofs) | 765,960 (v1: 2,566,689) |
 | Add a second card (2 of 3) | 555,553 |
 | `pay`, card + phone | 320,193 |
@@ -95,7 +101,9 @@ Live smoke test (`contracts/scripts/smokeV2.js`, run on Whitechain Sepolia, **29
 | `pay`, card alone (tiny amount) | 199,028 |
 | Change limits (card + phone) | 228,084 |
 | Freeze with the phone alone | 104,422 |
-| Unfreeze (card + phone) | 215,787 |
+| Unfreeze (card + phone) | 215,810 |
+| Start a phone replacement (2 cards, no phone) | 404,897 |
+| Finish a phone replacement | 203,115 |
 
 ### v2 relayer (`relayer/server.v2.js`)
 
@@ -114,12 +122,13 @@ npm run e2e:v2            # plays app + terminal + card + phone over HTTP (37 ch
 | `TOKEN_ADDRESS` | The stablecoin to use (the track USDT). If unset, it deploys a throwaway test token with a faucet. That mode does not count for the track. |
 | `FACTORY_V2` | Defaults to `factoryV2` in `contracts/deployments/<chainId>.json`. |
 | `DAILY_GAS_BUDGET`, `MAX_GAS_PRICE_GWEI` | Gas protection, below. |
-| `PER_TX_LIMIT`, `DAILY_LIMIT`, `RECOVERY_DELAY` | Starting limits and lost-card delay for new wallets. |
+| `PER_TX_LIMIT`, `DAILY_LIMIT`, `RECOVERY_DELAY` | Starting limits for new wallets, and the waiting period (seconds, default 86400) for lost-card and lost-phone replacements. Use a short value such as 120 to try recovery on a phone. |
+| `SIGNUP_LIMIT`, `POLL_MS` | Sign-ups and recoveries per IP per hour (default 1000), and how often the relayer reads new deposits (default 10,000 ms). |
 
 **What stops someone draining the relayer**
 1. Every call is simulated first, so a bad signature costs no gas.
 2. It only calls our own factory and wallet contracts, and they need valid card and phone signatures.
-3. Per-IP rate limits on every write endpoint, and a tighter one on wallet creation (10 an hour).
+3. Per-IP rate limits on every write endpoint. Wallet creation and recovery are allowed `SIGNUP_LIMIT` times an hour per IP (default 1000, so a hackathon demo never hits it; set it to 10 on a public deployment).
 4. A daily gas budget (default 0.5 of the native coin) and a gas price cap (default 100 gwei).
 5. It refuses to run on a real network without its own key.
 
@@ -127,7 +136,9 @@ Not covered yet: it does not check that a new card's key comes from a real bank 
 
 **How the relayer gets its coin:** on testnet from the Whitechain faucet (WBT). One full flow (sign up, pay, change limits, add a card, freeze, unfreeze) cost about 0.0148 WBT on Whitechain Sepolia.
 
-**Verified:** the end-to-end test passed 29 of 29 against a local chain and against Whitechain Sepolia (through the relayer, with a throwaway test token); with Send added it is 37 of 37 on the local chain. On a real Android phone (Galaxy A52s) with a real bank card, signing up and sending money to another address worked end to end against a local chain. Not yet verified: a run with the real track USDT (we have none yet), the real-card flow on Whitechain Sepolia, and the terminal hardware against this relayer.
+**Verified:** the end-to-end test passed 29 of 29 against a local chain and against Whitechain Sepolia (through the relayer, with a throwaway test token); with Send added it is 37 of 37 on a local chain and on Whitechain Sepolia against the latest factory. On a real Android phone (Galaxy A52s) with a real bank card, signing up and sending money to another address worked end to end against a local chain. Not yet verified: a run with the real track USDT (we have none yet), the real-card flow on Whitechain Sepolia, and the terminal hardware against this relayer.
+
+**Recover a wallet on a new phone (app and relayer):** on the first screen, "I already have a wallet". Tap two different cards of the wallet, then confirm with the fingerprint; the phone's new key is registered after the waiting period, and "Finish" then moves the wallet to this phone. The relayer endpoints are `/api/recover/start`, `/api/recover/:id`, `/api/recover/status/:wallet` and `/api/recover/finish`. The old phone, if it still works, sees a warning on Home and can cancel with its fingerprint (`/api/recovery-cancel/*`). It needs a wallet with at least two cards. The relayer end-to-end test covers it (54 checks).
 
 **Send and Receive (app):** the owner can pay any address, not only a shop. In the app: scan a QR code or paste an address, enter an amount, review it, tap the card on the back of the phone, confirm with the fingerprint. The contract needs no change, because `pay` already takes any recipient and the recipient is inside the hash the phone signs. The relayer endpoint is `POST /api/send/start`, followed by `/api/pay/:id/card` and `/api/pay/:id/phone`. A send always needs the phone's fingerprint, never the card-only shortcut. Receive shows the wallet address as a QR code with copy and share. The app checks the address format and its checksum, warns on a first-time recipient, and refuses amounts over the balance or the limits before the card is tapped.
 

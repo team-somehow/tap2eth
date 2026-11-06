@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Animated, Linking, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Switch, Text, TextInput, Vibration, View } from "react-native";
+import { ActivityIndicator, Alert, Animated, AppState, Linking, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Switch, Text, TextInput, Vibration, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as Clipboard from "expo-clipboard";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
@@ -16,10 +16,19 @@ const RELAYER = "http://localhost:8787";
 const C = { paper: "#EEF1F5", surface: "#FFFFFF", ink: "#14213D", soft: "#4B5872", line: "#D7DDE6", gold: "#C9A14A", blue: "#2457F5", green: "#178A55", red: "#C0392B", ice: "#BFD8EE", warn: "#FFF3D6", chip: "#E3E8F0" };
 
 async function api(path, body) {
-  const res = await fetch(RELAYER + path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(j.error || `Server error (${res.status})`);
-  return j;
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 20000); // never hang for a minute on a slow network
+  try {
+    const res = await fetch(RELAYER + path, { ...(body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}), signal: ctl.signal });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || `Server error (${res.status})`);
+    return j;
+  } catch (e) {
+    if (e && e.name === "AbortError") throw new Error("The server took too long to answer.");
+    throw e;
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 // Amounts are shown as plain dollars (the token is a dollar stablecoin).
@@ -36,6 +45,10 @@ function explain(e) {
   if (m.includes("OverLimit")) return "Declined: this payment is over your spending limit.";
   if (m.includes("IsFrozen")) return "Declined: your wallet is frozen.";
   if (m.includes("Expired")) return "This request expired. Ask the merchant to charge again.";
+  if (/RecoveryNotReady/.test(m)) return "Not ready yet. Wait for the timer to finish.";
+  if (/NotEnoughCards/.test(m)) return "Two different cards are needed.";
+  if (/RecoveryPending/.test(m)) return "A phone replacement is already waiting on this wallet.";
+  if (/NoRecovery/.test(m)) return "There's no phone replacement to finish.";
   if (/valid address/.test(m)) return "That address isn't valid. Check it and try again.";
   if (/Network request failed/.test(m)) return "Can't reach the Tap2ETH server.";
   if (/Tag was lost|transceive/i.test(m)) return "The card moved away. Hold it still against the phone and try again.";
@@ -180,7 +193,7 @@ function ActivityRow({ p, hidden, onOpen }) {
 
 // ------------------------------------------------------------------ welcome (unchanged flow)
 
-function Welcome({ onDone }) {
+function Welcome({ onDone, onRecover }) {
   const [step, setStep] = useState("intro"); // intro | scanning | creating
   const [err, setErr] = useState("");
 
@@ -230,6 +243,7 @@ function Welcome({ onDone }) {
       ))}
       <Text style={s.caption}>Your balance is crypto tokens that you own.</Text>
       <Button title="Create wallet" onPress={start} />
+      <Pressable onPress={onRecover}><Text style={s.link}>I already have a wallet</Text></Pressable>
       {!!err && <Text style={s.err}>{err}</Text>}
     </ScrollView>
   );
@@ -321,12 +335,12 @@ function ActivityTab({ w, hidden, toggleHidden, onOpen, refreshControl }) {
   );
 }
 
-function CardsTab({ w, openSub, setFreezeOpen, setUnfreezeOpen, onForget }) {
+function CardsTab({ w, openSub, setFreezeOpen, setUnfreezeOpen, onForget, refreshControl }) {
   const frozen = !!w?.frozen;
   const cards = w?.cards?.length ? w.cards : [{ id: 0, name: "Your bank card" }];
   const soft = w && Number(w.softLimit) > 0 ? `Up to ${usdShort(w.softLimit)}, no phone approval` : "Off";
   return (
-    <ScrollView contentContainerStyle={s.page}>
+    <ScrollView contentContainerStyle={s.page} refreshControl={refreshControl}>
       <Text style={s.pageTitle}>Cards</Text>
       <View style={{ gap: 10, marginTop: 10 }}>
         {cards.map((c, i) => <CardTile key={c.id} name={c.name} label={c.addedAt ? "Active" : "Linked bank card"} frozen={frozen} alt={i % 2 === 1} />)}
@@ -354,7 +368,7 @@ function CardsTab({ w, openSub, setFreezeOpen, setUnfreezeOpen, onForget }) {
       {frozen ? (
         <>
           <Button title="Unfreeze with your card" onPress={() => setUnfreezeOpen(true)} />
-          <Text style={s.fine}>Payments are blocked. Unfreezing needs your card and your fingerprint.</Text>
+          <Text style={s.fine}>Payments are blocked. Unfreezing needs card and fingerprint.</Text>
         </>
       ) : (
         <View style={{ marginTop: 14 }}><Button kind="outline" title="Freeze wallet" onPress={() => setFreezeOpen(true)} /></View>
@@ -386,7 +400,7 @@ function LimitsScreen({ w, onBack, secure }) {
       </View>
       <Text style={s.small}>{usd(w.spentToday)} spent today</Text>
       {bad && <Text style={s.err}>A single payment can't be more than the daily limit.</Text>}
-      <View style={s.warn}><Text style={s.warnText}>Changing limits needs <Text style={s.bold}>both</Text> your card and your fingerprint.</Text></View>
+      <View style={s.warn}><Text style={s.warnText}>Changing limits needs <Text style={s.bold}>both</Text> card and fingerprint.</Text></View>
       <SecureStatus busy={busy} />
       <Button title="Save limits" disabled={!!busy || bad} onPress={save} />
     </ScrollView>
@@ -417,7 +431,7 @@ function SmallScreen({ w, onBack, secure }) {
           <View style={s.warn}><Text style={s.warnText}><Text style={s.bold}>Less secure.</Text> Anyone with your card can pay up to {usdShort(amt)} at a time, within your daily limit. Keep this amount small.</Text></View>
         </>
       )}
-      <Text style={s.note}>Turning this on or off needs your card and your fingerprint.</Text>
+      <Text style={s.note}>Turning this on or off needs card and fingerprint.</Text>
       <SecureStatus busy={busy} />
       <Button title="Save" disabled={!!busy} onPress={save} />
     </ScrollView>
@@ -494,6 +508,156 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
       {!!hint && stage === "tap2" && <Text style={[s.fieldErr, { textAlign: "center", marginBottom: 8 }]}>{hint}</Text>}
       {stage === "mid" && <View style={{ alignSelf: "stretch" }}><Button big title="Continue" onPress={() => resume.current?.()} /></View>}
       {stage !== "sign" && <Button kind="ghost" title="Cancel" onPress={stop} />}
+    </View>
+  );
+}
+
+// ------------------------------------------------------------------ recover a wallet on a new phone
+
+const clock2 = (secs) => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+
+/** New phone or reinstalled app: two of the wallet's cards move the wallet to this phone, after a waiting period. */
+function RecoverScreen({ resume, onDone, onBack }) {
+  const [stage, setStage] = useState(resume ? "wait" : "intro"); // intro | tap1 | mid | tap2 | sign | sending | wait
+  const [wallet, setWallet] = useState(resume ? resume.wallet : null);
+  const [err, setErr] = useState("");
+  const [hint, setHint] = useState("");
+  const [info, setInfo] = useState(null); // answer from the relayer: { pending, readyAt, now, active, mine, at }
+  const [, setTick] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const resumeTap = useRef(null);
+  const aborted = useRef(false);
+  const phoneRef = useRef(null);
+  const getPhone = () => (phoneRef.current ||= createPhoneKey());
+
+  const enter = async (w) => {
+    await AsyncStorage.setItem("wallet", w);
+    await AsyncStorage.removeItem("recovery");
+    onDone(w);
+  };
+  const stop = () => { aborted.current = true; cancelCard(); resumeTap.current?.(); setHint(""); setStage("intro"); };
+
+  async function start() {
+    setErr("");
+    aborted.current = false;
+    if (!biometricsReady()) return setErr("Set up a fingerprint on this phone first (Settings → Biometrics).");
+    try {
+      const phone = getPhone();
+      setStage("tap1");
+      let st;
+      const c1 = await withCard(async (key) => {
+        st = await api("/api/recover/start", { cardModulus: key.modulus, ...phone });
+        return st.id ? st.challenge : null;
+      });
+      if (st.existing) return enter(st.wallet); // this phone is already a signer
+      if (st.pending) { await AsyncStorage.setItem("recovery", JSON.stringify({ wallet: st.wallet })); setWallet(st.wallet); return setStage("wait"); }
+      setStage("mid");
+      await new Promise((r) => { resumeTap.current = r; });
+      if (aborted.current) return;
+      setStage("tap2");
+      let c2;
+      for (;;) {
+        try {
+          c2 = await withCard(async (key) => {
+            if (key.modulus === c1.modulus) throw new Error("SAME_CARD");
+            return st.challenge;
+          });
+          break;
+        } catch (e) {
+          if (!/SAME_CARD/.test(String(e?.message))) throw e;
+          setHint("That's the first card. Tap a different one of your cards.");
+        }
+      }
+      setHint("");
+      setStage("sign");
+      const phoneSig = await signWithPhone(st.hash, "Recover your wallet", "Use this phone from now on");
+      setStage("sending");
+      const r = await api("/api/recover/" + st.id, { cards: [{ cardModulus: c1.modulus, cardSig: c1.signature }, { cardModulus: c2.modulus, cardSig: c2.signature }], phoneSig });
+      await AsyncStorage.setItem("recovery", JSON.stringify({ wallet: r.wallet }));
+      setWallet(r.wallet);
+      setStage("wait");
+    } catch (e) {
+      if (aborted.current) return;
+      setErr(explain(e));
+      setHint("");
+      setStage("intro");
+    }
+  }
+
+  // While waiting: ask the relayer where the replacement is, one request at a time.
+  useEffect(() => {
+    if (stage !== "wait" || !wallet) return;
+    let alive = true;
+    let timer;
+    const tick = async () => {
+      try {
+        const ph = getPhone();
+        const st = await api(`/api/recover/status/${wallet}?x=${ph.phoneX}&y=${ph.phoneY}`);
+        if (!alive) return;
+        setInfo({ ...st, at: Date.now() });
+        if (st.active) return enter(wallet);
+        setErr("");
+      } catch (e) { if (alive) setErr(explain(e)); }
+      if (alive) timer = setTimeout(tick, 3000);
+    };
+    tick();
+    const clockTimer = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => { alive = false; clearTimeout(timer); clearInterval(clockTimer); };
+  }, [stage, wallet]);
+
+  async function finishNow() {
+    setBusy(true);
+    setErr("");
+    try {
+      await api("/api/recover/finish", { wallet });
+      await enter(wallet);
+    } catch (e) { setErr(explain(e)); setBusy(false); }
+  }
+  const startOver = async () => { await AsyncStorage.removeItem("recovery"); setInfo(null); setWallet(null); setErr(""); setStage("intro"); };
+
+  if (stage === "intro") {
+    return (
+      <ScrollView contentContainerStyle={s.page}>
+        <Back title="Back" onPress={onBack} />
+        <Text style={s.pageTitle}>Recover your wallet</Text>
+        <Text style={s.soft}>New phone, or reinstalled the app? Tap two of your cards to move your wallet to this phone.</Text>
+        <View style={s.warn}><Text style={s.warnText}>For safety it takes effect after a waiting period, and your old phone can cancel it. Your wallet needs at least two cards for this.</Text></View>
+        <Button title="Start" onPress={start} />
+        {!!err && <Text style={s.err}>{err}</Text>}
+      </ScrollView>
+    );
+  }
+
+  if (stage === "wait") {
+    const remaining = info && info.pending ? Math.max(0, info.readyAt - (info.now + Math.floor((Date.now() - info.at) / 1000))) : null;
+    const cancelled = !!info && !info.pending && !info.active;
+    return (
+      <View style={s.center}>
+        {cancelled ? <View style={[s.bigCheck, { backgroundColor: "#F6D9D5" }]}><Text style={{ fontSize: 40 }}>✕</Text></View>
+          : remaining === 0 ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View>
+          : <ActivityIndicator size="large" color={C.blue} />}
+        <Text style={s.h2}>{cancelled ? "Replacement cancelled" : remaining === 0 ? "Ready to finish" : "Moving your wallet here"}</Text>
+        {!cancelled && remaining !== null && remaining > 0 && <Text style={[s.sheetAmount, { marginBottom: 8 }]}>{clock2(remaining)}</Text>}
+        <Text style={s.lede}>{cancelled ? "The old phone stopped this replacement. If that was a mistake, start again." : remaining === 0 ? "The waiting period is over. Finish to start using this phone." : "This waiting period protects you if someone else started this. Your old phone can cancel it until the timer ends. You can close the app; it will pick up here."}</Text>
+        {!!err && <Text style={[s.err, { marginTop: 0 }]}>{err}</Text>}
+        <View style={{ alignSelf: "stretch" }}>
+          {cancelled ? <Button big title="Start again" onPress={startOver} /> : <Button big title={busy ? "Finishing…" : "Finish"} disabled={busy || remaining !== 0} onPress={finishNow} />}
+          {!cancelled && <Button kind="ghost" title="Start over" onPress={startOver} />}
+        </View>
+      </View>
+    );
+  }
+
+  const at = stage === "tap1" ? 1 : stage === "mid" || stage === "tap2" ? 2 : 3;
+  return (
+    <View style={s.center}>
+      <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
+      {stage === "sign" || stage === "sending" ? <ActivityIndicator size="large" color={C.blue} /> : stage === "mid" ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View> : <ScanArt />}
+      <Text style={s.h2}>{stage === "tap1" ? "Tap your first card" : stage === "mid" ? "First card read" : stage === "tap2" ? "Now tap a different card" : stage === "sign" ? "Confirm it's you" : "Starting the replacement…"}</Text>
+      <Text style={s.lede}>{stage === "tap1" ? "Hold one of your wallet's cards to the back of the phone. We don't store the card number." : stage === "mid" ? "Take it away from the phone. Then tap Continue and hold a different card of this wallet to the phone." : stage === "tap2" ? "A second card of this wallet must agree." : stage === "sign" ? "Use your fingerprint when asked. This phone will become the wallet's phone." : "Recording it on the network."}</Text>
+      {!!hint && stage === "tap2" && <Text style={[s.fieldErr, { textAlign: "center", marginBottom: 8 }]}>{hint}</Text>}
+      {stage === "mid" && <View style={{ alignSelf: "stretch" }}><Button big title="Continue" onPress={() => resumeTap.current?.()} /></View>}
+      {(stage === "tap1" || stage === "mid" || stage === "tap2") && <Button kind="ghost" title="Cancel" onPress={stop} />}
     </View>
   );
 }
@@ -679,7 +843,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
             </Text>
           </View>
           <View style={s.detailRow}><Text style={s.small}>Network</Text><Text style={s.bold}>Whitechain Sepolia</Text></View>
-          <View style={s.detailRow}><Text style={s.small}>Approved by</Text><Text style={s.bold}>Your card + fingerprint</Text></View>
+          <View style={s.detailRow}><Text style={s.small}>Approved by</Text><Text style={s.bold}>Card and fingerprint</Text></View>
         </View>
         {!known && (
           <View style={s.warn}><Text style={s.warnText}>First time sending to this address. Check the start and end match what the receiver showed you. Money sent to a wrong address can't be taken back.</Text></View>
@@ -693,7 +857,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
     <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
       <Back title="Home" onPress={onBack} />
       <Text style={s.pageTitle}>Send</Text>
-      <Text style={s.soft}>To any wallet address on Whitechain. You'll tap your card and confirm with your fingerprint.</Text>
+      <Text style={s.soft}>To any wallet address on Whitechain. Approve with card and fingerprint.</Text>
 
       <Text style={[s.small, { marginTop: 18 }]}>To</Text>
       <TextInput value={addr} onChangeText={setAddr} placeholder="0x… wallet address" placeholderTextColor="#98A2B6" autoCapitalize="none" autoCorrect={false} spellCheck={false} style={[s.input, { marginBottom: 0 }]} />
@@ -753,11 +917,11 @@ function PaySheetBody({ pay, payBusy, approve, decline }) {
       <View style={s.agree}>
         <View style={s.agreeRow}>
           <View style={[s.agreeDot, { backgroundColor: "#D9EFE4" }]}><Icon name="check" size={16} color={C.green} sw={2.6} /></View>
-          <Text style={s.bold}>Your card</Text><Text style={s.agreeState}>tapped</Text>
+          <Text style={s.bold}>Card</Text><Text style={s.agreeState}>tapped</Text>
         </View>
         <View style={[s.agreeRow, { marginTop: 10 }]}>
           <View style={[s.agreeDot, { backgroundColor: sending ? "#D9EFE4" : "#FFF1D2" }]}><Icon name={sending ? "check" : "phone"} size={16} color={sending ? C.green : "#B7791F"} sw={2.4} /></View>
-          <Text style={s.bold}>You</Text><Text style={s.agreeState}>{sending ? "approved" : "approve now"}</Text>
+          <Text style={s.bold}>Fingerprint</Text><Text style={s.agreeState}>{sending ? "approved" : "approve now"}</Text>
         </View>
       </View>
 
@@ -778,7 +942,7 @@ function PaySheetBody({ pay, payBusy, approve, decline }) {
 function DetailBody({ p, hidden, onClose }) {
   const m = rowMeta(p);
   const amount = hidden ? MASK : (m.tone === "in" ? "+" : m.tone === "out" ? "−" : "") + usd(p.amount);
-  const approved = p.kind === "received" ? "" : p.status !== "paid" ? "" : p.cardOnly ? "Your card (small payment)" : "Your card and your fingerprint";
+  const approved = p.kind === "received" ? "" : p.status !== "paid" ? "" : p.cardOnly ? "Card (small payment)" : "Card and fingerprint";
   const when = p.time ? new Date(p.time).toLocaleString("en-US", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "";
   const line = (k, v) => !!v && (<View style={s.detailRow}><Text style={s.small}>{k}</Text><Text style={[s.bold, { maxWidth: "62%", textAlign: "right" }]}>{v}</Text></View>);
   return (
@@ -825,11 +989,13 @@ function Main({ wallet, onForget }) {
   const [payBusy, setPayBusy] = useState("");
   const [freezeOpen, setFreezeOpen] = useState(false);
   const [unfreezeOpen, setUnfreezeOpen] = useState(false);
+  const [recoOpen, setRecoOpen] = useState(false);
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState(null);
   const [paid, setPaid] = useState(null); // { amount, merchantName } after a successful approval
   const [detail, setDetail] = useState(null); // an activity item opened for details
-  const [offline, setOffline] = useState(false);
+  const [failures, setFailures] = useState(0); // consecutive failed refreshes (shown quietly, never as an error banner)
+  const [updatedAt, setUpdatedAt] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const seen = useRef(new Set());
 
@@ -837,7 +1003,7 @@ function Main({ wallet, onForget }) {
   const copyAddress = async () => { await Clipboard.setStringAsync(wallet); Vibration.vibrate(30); say("Wallet address copied"); };
   const onRefresh = async () => {
     setRefreshing(true);
-    try { await refresh(); setOffline(false); } catch { setOffline(true); }
+    try { await refresh(true); setFailures(0); } catch { say("Couldn't refresh right now. Showing the last update."); }
     setRefreshing(false);
   };
   const refreshControl = <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.blue} />;
@@ -845,9 +1011,10 @@ function Main({ wallet, onForget }) {
   useEffect(() => { AsyncStorage.getItem("hideAmounts").then((v) => setHidden(v === "1")); }, []);
   const toggleHidden = () => setHidden((h) => { AsyncStorage.setItem("hideAmounts", h ? "0" : "1"); return !h; });
 
-  const refresh = useCallback(async () => {
-    const d = await api("/api/wallet/" + wallet);
+  const refresh = useCallback(async (fresh) => {
+    const d = await api("/api/wallet/" + wallet + (fresh ? "?fresh=1" : ""));
     setW(d);
+    if (!d.stale) setUpdatedAt(Date.now());
     const next = d.pending.find((p) => !seen.current.has(p.id));
     setPay((cur) => {
       if (!cur && next) { Vibration.vibrate([0, 60, 40, 60]); return next; }
@@ -856,9 +1023,22 @@ function Main({ wallet, onForget }) {
   }, [wallet]);
 
   useEffect(() => {
-    refresh().catch((e) => { setOffline(true); say(explain(e), true); });
-    const t = setInterval(() => refresh().then(() => setOffline(false)).catch(() => setOffline(true)), 1500);
-    return () => clearInterval(t);
+    // One request at a time: a real chain can take 1 to 3 seconds to answer, and overlapping polls made the app
+    // show "can't reach the server" even though the server was fine.
+    let alive = true;
+    let timer;
+    let first = true;
+    const tick = async () => {
+      if (AppState.currentState === "active") { // no polling while the app is in the background
+        try { await refresh(); if (alive) setFailures(0); }
+        catch (e) { if (alive) { setFailures((n) => n + 1); if (first) say(explain(e), true); } }
+      }
+      first = false;
+      if (alive) timer = setTimeout(tick, 4000);
+    };
+    tick();
+    const sub = AppState.addEventListener("change", (st) => { if (st === "active") refresh().then(() => alive && setFailures(0)).catch(() => {}); });
+    return () => { alive = false; clearTimeout(timer); sub.remove(); };
   }, [refresh]);
 
   async function approve() {
@@ -916,6 +1096,19 @@ function Main({ wallet, onForget }) {
     refresh().catch(() => {});
   }
 
+  async function cancelReplacement() {
+    setBusy("reco");
+    try {
+      const { id, hash } = await api("/api/recovery-cancel/start", { wallet });
+      const phoneSig = await signWithPhone(hash, "Cancel the phone replacement", "Keep using this phone");
+      await api("/api/recovery-cancel/" + id, { phoneSig });
+      setRecoOpen(false);
+      say("Phone replacement cancelled.");
+    } catch (e) { say(explain(e), true); }
+    setBusy("");
+    refresh().catch(() => {});
+  }
+
   /** A wallet change that needs the card and the fingerprint: tap, sign, send. `onStage` shows progress. */
   async function secure(action, params, title, subtitle, onStage, doneText) {
     try {
@@ -942,7 +1135,15 @@ function Main({ wallet, onForget }) {
 
   return (
     <View style={{ flex: 1 }}>
-      {offline && <View style={s.offline}><Text style={s.offlineTxt}>Can't reach the server. Retrying…</Text></View>}
+      {(failures >= 3 || (w && w.stale)) && !!w && (
+        <View style={s.quiet}><Text style={s.quietTxt}>{updatedAt ? `Last updated ${clock(updatedAt)}` : "Not updated yet"} · pull down to refresh</Text></View>
+      )}
+      {!!w?.phoneRecovery?.pending && !sub && (
+        <Pressable style={s.recoBanner} onPress={() => setRecoOpen(true)} accessibilityLabel="Phone replacement started">
+          <Text style={s.recoTitle}>Someone is moving this wallet to another phone</Text>
+          <Text style={s.recoSub}>It takes effect at {new Date(w.phoneRecovery.readyAt * 1000).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}. If it wasn't you, tap to cancel it.</Text>
+        </Pressable>
+      )}
       {sub === "limits" && w ? <LimitsScreen w={w} onBack={back} secure={secure} />
         : sub === "small" && w ? <SmallScreen w={w} onBack={back} secure={secure} />
         : sub === "add" ? <AddCardScreen wallet={wallet} onBack={back} refresh={refresh} say={say} />
@@ -950,7 +1151,7 @@ function Main({ wallet, onForget }) {
         : sub === "receive" ? <ReceiveScreen wallet={wallet} onBack={back} onCopy={copyAddress} />
         : tab === "home" ? <HomeTab w={w} wallet={wallet} hidden={hidden} toggleHidden={toggleHidden} goActivity={() => setTab("activity")} onCopy={copyAddress} onOpen={setDetail} onSend={() => goSub("send")} onReceive={() => goSub("receive")} refreshControl={refreshControl} />
         : tab === "activity" ? <ActivityTab w={w} hidden={hidden} toggleHidden={toggleHidden} onOpen={setDetail} refreshControl={refreshControl} />
-        : <CardsTab w={w} openSub={goSub} setFreezeOpen={setFreezeOpen} setUnfreezeOpen={setUnfreezeOpen} onForget={onForget} />}
+        : <CardsTab w={w} openSub={goSub} setFreezeOpen={setFreezeOpen} setUnfreezeOpen={setUnfreezeOpen} onForget={onForget} refreshControl={refreshControl} />}
 
       {!sub && <TabBar tab={tab} setTab={setTab} />}
       {toast && <View style={[s.toast, toast.bad && { backgroundColor: C.red }]}><Text style={s.toastText}>{toast.text}</Text></View>}
@@ -977,9 +1178,16 @@ function Main({ wallet, onForget }) {
         {detail && <DetailBody p={detail} hidden={hidden} onClose={() => setDetail(null)} />}
       </Sheet>
 
+      <Sheet visible={recoOpen} onClose={() => !busy && setRecoOpen(false)}>
+        <Text style={s.sheetTitle}>Cancel the phone replacement?</Text>
+        <Text style={[s.soft, { marginBottom: 18 }]}>Two of your cards were used to move this wallet to another phone. If that was you, leave it. If it wasn't, cancel it now with your fingerprint.</Text>
+        <Button big kind="danger" title={busy === "reco" ? "Waiting for fingerprint…" : "Cancel the replacement"} disabled={!!busy} onPress={cancelReplacement} />
+        <Button kind="ghost" title="Leave it" onPress={() => setRecoOpen(false)} />
+      </Sheet>
+
       <Sheet visible={freezeOpen} onClose={() => !busy && setFreezeOpen(false)}>
         <Text style={s.sheetTitle}>Freeze this wallet?</Text>
-        <Text style={[s.soft, { marginBottom: 18 }]}>All payments stop right away, even if someone has your card. Unfreezing needs this phone and your card together.</Text>
+        <Text style={[s.soft, { marginBottom: 18 }]}>All payments stop right away, even if someone has your card. Unfreezing needs card and fingerprint.</Text>
         <Button big kind="danger" title={busy ? "Waiting for fingerprint…" : "Freeze wallet"} disabled={!!busy} onPress={freeze} />
         <Button kind="ghost" title="Keep it active" onPress={() => setFreezeOpen(false)} />
       </Sheet>
@@ -1001,16 +1209,29 @@ function Main({ wallet, onForget }) {
 
 export default function App() {
   const [wallet, setWallet] = useState(undefined);
-  useEffect(() => { AsyncStorage.getItem("wallet").then((w) => setWallet(w || null)); }, []);
+  const [recovery, setRecovery] = useState(null); // { wallet } while a phone replacement is waiting
+  const [mode, setMode] = useState("welcome"); // welcome | recover
+  useEffect(() => {
+    (async () => {
+      const w = await AsyncStorage.getItem("wallet");
+      const rj = await AsyncStorage.getItem("recovery");
+      const rv = rj ? JSON.parse(rj) : null;
+      setRecovery(rv);
+      if (!w && rv) setMode("recover");
+      setWallet(w || null);
+    })();
+  }, []);
   const forget = () =>
     Alert.alert("Remove wallet from this phone?", "This deletes the phone's key. Without it, the funds can't be spent from this phone.", [
       { text: "Cancel", style: "cancel" },
-      { text: "Remove", style: "destructive", onPress: async () => { await AsyncStorage.removeItem("wallet"); try { forgetPhoneKey(); } catch {} setWallet(null); } },
+      { text: "Remove", style: "destructive", onPress: async () => { await AsyncStorage.removeItem("wallet"); try { forgetPhoneKey(); } catch {} setWallet(null); setMode("welcome"); } },
     ]);
   return (
     <View style={s.root}>
       <StatusBar style="dark" />
-      {wallet === undefined ? null : wallet ? <Main wallet={wallet} onForget={forget} /> : <Welcome onDone={setWallet} />}
+      {wallet === undefined ? null : wallet ? <Main wallet={wallet} onForget={forget} />
+        : mode === "recover" ? <RecoverScreen resume={recovery} onDone={(w) => { setRecovery(null); setMode("welcome"); setWallet(w); }} onBack={() => { setRecovery(null); setMode("welcome"); }} />
+        : <Welcome onDone={setWallet} onRecover={() => setMode("recover")} />}
     </View>
   );
 }
@@ -1097,6 +1318,9 @@ const s = StyleSheet.create({
   warn: { backgroundColor: C.warn, borderRadius: 12, padding: 12, marginTop: 12, marginBottom: 6 },
   warnText: { fontSize: 13, lineHeight: 19, color: "#6B4E00" },
   input: { height: 52, borderRadius: 12, borderWidth: 1.5, borderColor: C.line, backgroundColor: "#fff", paddingHorizontal: 14, fontSize: 17, color: C.ink, marginTop: 6, marginBottom: 6 },
+  recoBanner: { backgroundColor: C.warn, marginHorizontal: 16, marginTop: 10, padding: 12, borderRadius: 12 },
+  recoTitle: { fontSize: 14, fontWeight: "700", color: "#6B4E00" },
+  recoSub: { fontSize: 13, color: "#6B4E00", marginTop: 2, lineHeight: 18 },
   // send / receive
   actions: { flexDirection: "row", gap: 12, marginTop: 20 },
   actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 14 },
@@ -1134,8 +1358,8 @@ const s = StyleSheet.create({
   bigCheck: { width: 84, height: 84, borderRadius: 42, backgroundColor: "#D9EFE4", alignItems: "center", justifyContent: "center", marginBottom: 12 },
   paidTitle: { fontSize: 22, fontWeight: "800", color: C.ink, marginBottom: 2 },
   detailRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 12, paddingHorizontal: 14, borderTopWidth: 1, borderColor: C.line },
-  offline: { backgroundColor: C.red, paddingVertical: 6, alignItems: "center" },
-  offlineTxt: { color: "#fff", fontSize: 12, fontWeight: "600" },
+  quiet: { backgroundColor: C.chip, paddingVertical: 6, alignItems: "center" },
+  quietTxt: { color: C.soft, fontSize: 12, fontWeight: "500" },
   // sheets and toast
   scrim: { flex: 1, backgroundColor: "rgba(20,33,61,.45)" },
   sheet: { backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingTop: 10, paddingBottom: 30 },
