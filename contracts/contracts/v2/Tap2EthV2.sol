@@ -172,6 +172,16 @@ contract Tap2EthWalletV2 {
     uint256 public recoveryDelay;
     Recovery public recovery;
 
+    /// @dev Pending replacement of the phone signer(s), started by two cards without any phone signature.
+    struct PhoneRecovery {
+        bytes32 x;
+        bytes32 y;
+        uint256 readyAt; // 0 = nothing pending
+    }
+
+    uint256 public constant RECOVERY_CARDS = 2; // different cards needed to start a phone replacement
+    PhoneRecovery public phoneRecovery;
+
     event Paid(address indexed token, address indexed merchant, uint256 amount, uint256 nonce);
     event Frozen(bool frozen, uint256 nonce);
     event LimitsChanged(uint256 perTxLimit, uint256 dailyLimit);
@@ -182,6 +192,9 @@ contract Tap2EthWalletV2 {
     event RecoveryProposed(uint256 indexed oldId, uint256 readyAt);
     event RecoveryCancelled();
     event RecoveryExecuted(uint256 indexed oldId, uint256 indexed newId);
+    event PhoneRecoveryProposed(bytes32 keyHash, uint256 readyAt);
+    event PhoneRecoveryCancelled();
+    event PhoneRecoveryExecuted(uint256 indexed newId);
 
     error Expired();
     error IsFrozen();
@@ -202,6 +215,7 @@ contract Tap2EthWalletV2 {
     error RecoveryNotReady();
     error AlreadyInitialized();
     error NotCard();
+    error NotEnoughCards();
 
     /// @dev The implementation contract is locked; wallets are clones that get initialized once by the factory.
     constructor() {
@@ -403,7 +417,84 @@ contract Tap2EthWalletV2 {
         emit RecoveryCancelled();
     }
 
+    // ------------------------------------------------- lost phone: recovery by two cards
+
+    /// @notice The hash the two cards (first 4 bytes) and the new phone (full hash) sign to start a phone replacement.
+    function phoneRecoveryHash(bytes32 newX, bytes32 newY, uint256 expiry) public view returns (bytes32) {
+        return actionHash("proposePhoneRecovery", abi.encode(newX, newY), expiry);
+    }
+
+    /// @notice Lost or wiped phone: at least two DIFFERENT cards plus the new phone start a replacement that only takes
+    ///         effect after `recoveryDelay`. Any single active signer can cancel it in the meantime. No phone
+    ///         signature is needed to start it. Each card signs only 4 bytes of the request hash.
+    function proposePhoneRecovery(
+        bytes32 newX,
+        bytes32 newY,
+        uint256 expiry,
+        Sig[] calldata cardSigs,
+        bytes calldata newPhoneProof
+    ) external virtual {
+        _prePhoneRecovery(newX, newY, expiry);
+        bytes32 h = phoneRecoveryHash(newX, newY, expiry);
+        if (cardSigs.length < RECOVERY_CARDS) revert NotEnoughCards();
+        uint256 last;
+        for (uint256 i = 0; i < cardSigs.length; i++) {
+            Sig calldata sg = cardSigs[i];
+            if (i > 0 && sg.id <= last) revert SignaturesNotSorted();
+            last = sg.id;
+            Signer storage c = _signers[sg.id];
+            if (!c.active) revert UnknownSigner();
+            if (c.kind != Kind.Card) revert NotCard();
+            if (!TapSig.verifyRsa(c.a, c.b, bytes4(h), sg.data)) revert BadSignature();
+        }
+        _postPhoneRecovery(h, newX, newY, newPhoneProof);
+    }
+
+    /// @notice Anyone can finish the replacement once the delay has passed. The new phone is added and every old
+    ///         phone is removed.
+    function executePhoneRecovery() external {
+        PhoneRecovery memory r = phoneRecovery;
+        if (r.readyAt == 0) revert NoRecovery();
+        if (block.timestamp < r.readyAt) revert RecoveryNotReady();
+        delete phoneRecovery;
+        nonce++;
+        uint256 n = signerCount;
+        uint256 newId = _addSigner(Kind.Phone, abi.encode(r.x), abi.encode(r.y));
+        for (uint256 i = 0; i < n; i++) {
+            if (_signers[i].active && _signers[i].kind == Kind.Phone) _removeSigner(i);
+        }
+        if (threshold > activeCount) threshold = activeCount;
+        emit SignerAdded(newId, Kind.Phone, keccak256(abi.encode(abi.encode(r.x), abi.encode(r.y))));
+        emit PhoneRecoveryExecuted(newId);
+    }
+
+    /// @notice Any single active signer (card or phone) can cancel a pending phone replacement.
+    function cancelPhoneRecovery(uint256 expiry, Sig[] calldata sigs) external {
+        if (block.timestamp > expiry) revert Expired();
+        if (phoneRecovery.readyAt == 0) revert NoRecovery();
+        _approve(actionHash("cancelPhoneRecovery", "", expiry), sigs, 1, false);
+        nonce++;
+        delete phoneRecovery;
+        emit PhoneRecoveryCancelled();
+    }
+
     // ----------------------------------------------------------------- internals
+
+    /// @dev Checks shared by every way of starting a phone replacement.
+    function _prePhoneRecovery(bytes32 newX, bytes32 newY, uint256 expiry) internal view {
+        if (block.timestamp > expiry) revert Expired();
+        if (phoneRecovery.readyAt != 0) revert RecoveryPending();
+        if (_hasKey[keccak256(abi.encode(abi.encode(newX), abi.encode(newY)))]) revert DuplicateKey();
+    }
+
+    /// @dev The new phone proves it holds its key (it signs the full hash), then the replacement is stored.
+    function _postPhoneRecovery(bytes32 h, bytes32 newX, bytes32 newY, bytes calldata newPhoneProof) internal {
+        TapSig.PhoneSig memory ps = abi.decode(newPhoneProof, (TapSig.PhoneSig));
+        if (!TapSig.verifyWebAuthn(h, ps, newX, newY)) revert BadSignature();
+        nonce++;
+        phoneRecovery = PhoneRecovery(newX, newY, block.timestamp + recoveryDelay);
+        emit PhoneRecoveryProposed(keccak256(abi.encode(newX, newY)), block.timestamp + recoveryDelay);
+    }
 
     function _addSigner(Kind kind, bytes memory a, bytes memory b) internal returns (uint256 id) {
         bytes32 k = keccak256(abi.encode(a, b));

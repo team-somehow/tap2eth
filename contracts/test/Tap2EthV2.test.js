@@ -309,4 +309,116 @@ describe("Tap2ETH wallet v2", function () {
       await expect(propose(1, [P()])).to.be.revertedWithCustomError(wallet, "NotCard");
     });
   });
+
+  describe("lost phone recovery by two cards (one 4-byte piece per card)", () => {
+    let card2, C2;
+    beforeEach(async () => {
+      card2 = makeCard();
+      await addCard(card2); // card ids: 0 and 2; phone id: 1
+      C2 = { kind: "card", obj: card2, id: 2 };
+    });
+
+    /** Two cards (no phone) plus the new phone start the replacement. `cards` are signers, `cardSigner` can override who signs. */
+    async function proposePhone(newPhone, cards = [C(), C2], exp) {
+      exp = exp || (await expiry());
+      const h = await wallet.phoneRecoveryHash(newPhone.x, newPhone.y, exp);
+      return wallet.proposePhoneRecovery(newPhone.x, newPhone.y, exp, sigs(cards, h), coder.encode([PHONE_T], [newPhone.sign(h)]));
+    }
+
+    it("replaces the phone after the delay with two cards and no phone signature", async () => {
+      const np = makePasskey();
+      await proposePhone(np);
+      await expect(wallet.executePhoneRecovery()).to.be.revertedWithCustomError(wallet, "RecoveryNotReady");
+      await pay([C(), P()], USDC(1)); // the old phone keeps working until then
+      await time.increase(3601);
+      await wallet.executePhoneRecovery();
+      expect(await wallet.phoneCount()).to.equal(1);
+      expect(await wallet.activeCount()).to.equal(3);
+      await expect(pay([C(), P()], USDC(1))).to.be.revertedWithCustomError(wallet, "UnknownSigner"); // old phone is gone
+      await pay([C(), { kind: "phone", obj: np, id: 3 }], USDC(1)); // new phone works with a card
+    });
+
+    it("needs two different cards", async () => {
+      const np = makePasskey();
+      await expect(proposePhone(np, [C()])).to.be.revertedWithCustomError(wallet, "NotEnoughCards");
+      await expect(proposePhone(np, [])).to.be.revertedWithCustomError(wallet, "NotEnoughCards");
+      await expect(proposePhone(np, [C(), C()])).to.be.revertedWithCustomError(wallet, "SignaturesNotSorted");
+    });
+
+    it("rejects a phone among the signers, a wrong card signature and unknown ids", async () => {
+      const np = makePasskey();
+      await expect(proposePhone(np, [C(), P()])).to.be.revertedWithCustomError(wallet, "NotCard");
+      await expect(proposePhone(np, [C(), { ...C2, obj: makeCard() }])).to.be.revertedWithCustomError(wallet, "BadSignature");
+      await expect(proposePhone(np, [C(), { ...C2, id: 7 }])).to.be.revertedWithCustomError(wallet, "UnknownSigner");
+    });
+
+    it("the new phone must prove it holds its key", async () => {
+      const np = makePasskey();
+      const exp = await expiry();
+      const h = await wallet.phoneRecoveryHash(np.x, np.y, exp);
+      await expect(wallet.proposePhoneRecovery(np.x, np.y, exp, sigs([C(), C2], h), coder.encode([PHONE_T], [makePasskey().sign(h)])))
+        .to.be.revertedWithCustomError(wallet, "BadSignature");
+    });
+
+    it("rejects a request signed for a different phone or an expired one", async () => {
+      const np = makePasskey();
+      const other = makePasskey();
+      const exp = await expiry();
+      const h = await wallet.phoneRecoveryHash(np.x, np.y, exp);
+      await expect(wallet.proposePhoneRecovery(other.x, other.y, exp, sigs([C(), C2], h), coder.encode([PHONE_T], [other.sign(h)])))
+        .to.be.revertedWithCustomError(wallet, "BadSignature");
+      await time.increase(1000);
+      await expect(wallet.proposePhoneRecovery(np.x, np.y, exp, sigs([C(), C2], h), coder.encode([PHONE_T], [np.sign(h)])))
+        .to.be.revertedWithCustomError(wallet, "Expired");
+    });
+
+    it("cannot start a second replacement while one is pending, or re-add a current phone", async () => {
+      await expect(proposePhone(phone)).to.be.revertedWithCustomError(wallet, "DuplicateKey");
+      await proposePhone(makePasskey());
+      await expect(proposePhone(makePasskey())).to.be.revertedWithCustomError(wallet, "RecoveryPending");
+    });
+
+    it("can be cancelled by the old phone alone or by a single card", async () => {
+      const cancel = (list) => act("cancelPhoneRecovery", "0x", list, (e, s) => wallet.cancelPhoneRecovery(e, s));
+      await proposePhone(makePasskey());
+      await cancel([P()]);
+      await time.increase(3601);
+      await expect(wallet.executePhoneRecovery()).to.be.revertedWithCustomError(wallet, "NoRecovery");
+      await pay([C(), P()], USDC(1)); // old phone unaffected
+      await proposePhone(makePasskey());
+      await cancel([C2]);
+      await expect(wallet.executePhoneRecovery()).to.be.revertedWithCustomError(wallet, "NoRecovery");
+      await expect(cancel([P()])).to.be.revertedWithCustomError(wallet, "NoRecovery");
+    });
+
+    it("replaces every old phone and lowers the threshold if it no longer fits", async () => {
+      const phone2 = makePasskey();
+      const k = ethers.keccak256;
+      const x = coder.encode(["bytes32"], [phone2.x]);
+      const y = coder.encode(["bytes32"], [phone2.y]);
+      await act("addSigner", coder.encode(["uint8", "bytes32", "bytes32"], [PHONE, k(x), k(y)]), [C(), P()], (exp, s, h) =>
+        wallet.addSigner(PHONE, x, y, exp, s, coder.encode([PHONE_T], [phone2.sign(h)])),
+      ); // phone id 3: now 2 cards + 2 phones
+      await act("threshold", coder.encode(["uint256"], [4]), [C(), P()], (e, s) => wallet.setThreshold(4, e, s));
+      expect(await wallet.threshold()).to.equal(4);
+      const np = makePasskey();
+      await proposePhone(np);
+      await time.increase(3601);
+      await wallet.executePhoneRecovery();
+      expect(await wallet.phoneCount()).to.equal(1);
+      expect(await wallet.activeCount()).to.equal(3);
+      expect(await wallet.threshold()).to.equal(3);
+      await pay([C(), C2, { kind: "phone", obj: np, id: 4 }], USDC(1));
+    });
+
+    it("a wallet with a single card cannot start it", async () => {
+      const lone = await makeWallet();
+      const np = makePasskey();
+      const exp = await expiry();
+      const h = await lone.wallet.phoneRecoveryHash(np.x, np.y, exp);
+      const one = [{ id: 0, data: cardSig(lone.c, h) }];
+      await expect(lone.wallet.proposePhoneRecovery(np.x, np.y, exp, one, coder.encode([PHONE_T], [np.sign(h)])))
+        .to.be.revertedWithCustomError(lone.wallet, "NotEnoughCards");
+    });
+  });
 });
