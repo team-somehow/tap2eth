@@ -324,7 +324,7 @@ function ActivityTab({ w, hidden, toggleHidden, onOpen, refreshControl }) {
 function CardsTab({ w, openSub, setFreezeOpen, setUnfreezeOpen, onForget }) {
   const frozen = !!w?.frozen;
   const cards = w?.cards?.length ? w.cards : [{ id: 0, name: "Your bank card" }];
-  const soft = w && Number(w.softLimit) > 0 ? `Up to ${usdShort(w.softLimit)}` : "Off";
+  const soft = w && Number(w.softLimit) > 0 ? `Up to ${usdShort(w.softLimit)}, no phone approval` : "Off";
   return (
     <ScrollView contentContainerStyle={s.page}>
       <Text style={s.pageTitle}>Cards</Text>
@@ -337,11 +337,17 @@ function CardsTab({ w, openSub, setFreezeOpen, setUnfreezeOpen, onForget }) {
       <View style={s.activity}>
         {w?.v2 ? (
           <>
-            <Pressable style={s.ctlRow} onPress={() => openSub("limits")}><Text style={s.bold}>Spending limits</Text><Text style={s.ctlVal}>{usdShort(w.perTxLimit)} each · {usdShort(w.dailyLimit)} a day  ›</Text></Pressable>
-            <Pressable style={[s.ctlRow, s.actBorder]} onPress={() => openSub("small")}><Text style={s.bold}>Tap to pay, card only</Text><Text style={s.ctlVal}>{soft}  ›</Text></Pressable>
+            <Pressable style={s.ctlRow} onPress={() => openSub("limits")}>
+              <View style={{ flex: 1, paddingRight: 12 }}><Text style={s.bold}>Spending limits</Text><Text style={s.ctlSub}>{usdShort(w.perTxLimit)} per payment · {usdShort(w.dailyLimit)} per day</Text></View>
+              <Text style={s.chev}>›</Text>
+            </Pressable>
+            <Pressable style={[s.ctlRow, s.actBorder]} onPress={() => openSub("small")}>
+              <View style={{ flex: 1, paddingRight: 12 }}><Text style={s.bold}>Tap to pay, card only</Text><Text style={s.ctlSub}>{soft}</Text></View>
+              <Text style={s.chev}>›</Text>
+            </Pressable>
           </>
         ) : (
-          <View style={s.ctlRow}><Text style={s.bold}>Spending limits</Text><Text style={s.ctlVal}>{w ? `${usdShort(w.perTxLimit)} each · ${usdShort(w.dailyLimit)} a day` : ""}</Text></View>
+          <View style={s.ctlRow}><View style={{ flex: 1 }}><Text style={s.bold}>Spending limits</Text><Text style={s.ctlSub}>{w ? `${usdShort(w.perTxLimit)} per payment · ${usdShort(w.dailyLimit)} per day` : ""}</Text></View></View>
         )}
       </View>
 
@@ -1073,6 +1079,8 @@ const s = StyleSheet.create({
   actDead: { color: "#8793A8", textDecorationLine: "line-through" },
   ctlRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14 },
   ctlVal: { fontSize: 14, color: C.soft },
+  ctlSub: { fontSize: 14, color: C.soft, marginTop: 3 },
+  chev: { fontSize: 26, color: "#8793A8", lineHeight: 28 },
   link: { textAlign: "center", color: C.soft, textDecorationLine: "underline", marginTop: 16, fontSize: 14 },
   // tab bar
   tabbar: { flexDirection: "row", backgroundColor: "#fff", borderTopWidth: 1, borderColor: C.line, paddingTop: 8, paddingBottom: 14 },
