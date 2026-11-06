@@ -228,14 +228,14 @@ app.post("/api/signup/:id", limit("signup-finish", 10, 3600_000), wrap(async (re
 
 const payments = new Map();
 
-// Terminal: the merchant typed an amount and the customer tapped. Returns the 4-byte challenge for the card.
-app.post("/api/pay/start", limit("pay-start", 120, 60_000), wrap(async (req, res) => {
-  const { cardModulus, amount } = req.body || {};
+// Opens a payment request for a wallet. Used by the terminal (pays the merchant) and by the app's Send (pays any address).
+async function openPayment({ cardModulus, amount, to, kind }) {
   const wallet = await factory.walletOf(ethers.keccak256(hex(cardModulus)));
   if (wallet === ethers.ZeroAddress) throw httpError(404, "card not registered");
   const w = walletAt(wallet);
   const [frozen, threshold, softLimit, softCardOnly, perTx, daily, list] = await Promise.all([w.frozen(), w.threshold(), w.softLimit(), w.softCardOnly(), w.perTxLimit(), w.dailyLimit(), signersOf(w)]);
   const value = units(amount);
+  if (value <= 0n) throw httpError(400, "Enter an amount above 0.");
   if (frozen) throw httpError(400, "IsFrozen");
   if (value > perTx || (await spentToday(w)) + value > daily) throw httpError(400, "OverLimit");
   const soft = softLimit > 0n && value <= softLimit;
@@ -244,11 +244,30 @@ app.post("/api/pay/start", limit("pay-start", 120, 60_000), wrap(async (req, res
   if (cardId === undefined) throw httpError(404, "card not registered");
   const expiry = (await chainNow()) + TTL;
   const nonce = await w.nonce();
-  const hash = await w.paymentHash(tokenAddr, MERCHANT, value, nonce, expiry);
+  const hash = await w.paymentHash(tokenAddr, to, value, nonce, expiry);
   const id = crypto.randomUUID();
-  const cardOnly = soft && softCardOnly;
-  payments.set(id, { id, wallet, amount: String(amount), value, expiry, hash, cardId, cardOnly, status: "waiting_for_card_sig", created: Date.now() });
-  res.json({ id, challenge: hash.slice(2, 10), wallet, cardOnly });
+  // A send is always approved with the phone on the same device, so it never uses the card-only shortcut.
+  const cardOnly = kind !== "send" && soft && softCardOnly;
+  const p = { id, kind, wallet, to, amount: String(amount), value, expiry, hash, cardId, cardOnly, status: "waiting_for_card_sig", created: Date.now() };
+  payments.set(id, p);
+  return p;
+}
+
+// Terminal: the merchant typed an amount and the customer tapped. Returns the 4-byte challenge for the card.
+app.post("/api/pay/start", limit("pay-start", 120, 60_000), wrap(async (req, res) => {
+  const p = await openPayment({ cardModulus: req.body?.cardModulus, amount: req.body?.amount, to: MERCHANT, kind: "payment" });
+  res.json({ id: p.id, challenge: p.hash.slice(2, 10), wallet: p.wallet, cardOnly: p.cardOnly });
+}));
+
+// App "Send": the owner pays any address. The same phone taps the card and signs, so the app also gets the hash.
+app.post("/api/send/start", limit("send-start", 60, 60_000), wrap(async (req, res) => {
+  const { cardModulus, amount, to } = req.body || {};
+  if (!ethers.isAddress(to)) throw httpError(400, "That is not a valid address.");
+  const dest = ethers.getAddress(to);
+  if (dest === ethers.ZeroAddress || dest.toLowerCase() === tokenAddr.toLowerCase()) throw httpError(400, "That address cannot receive money.");
+  const p = await openPayment({ cardModulus, amount, to: dest, kind: "send" });
+  if (dest.toLowerCase() === p.wallet.toLowerCase()) { payments.delete(p.id); throw httpError(400, "That is your own wallet."); }
+  res.json({ id: p.id, challenge: p.hash.slice(2, 10), hash: p.hash, wallet: p.wallet, to: dest, expiry: p.expiry });
 }));
 
 async function submitPayment(p, phoneSig) {
@@ -257,7 +276,7 @@ async function submitPayment(p, phoneSig) {
   p.status = "submitting";
   try {
     let args;
-    const build = (extra) => [tokenAddr, MERCHANT, p.value, p.expiry, sorted([cardEntry(p.cardId, p.cardSig), ...extra])];
+    const build = (extra) => [tokenAddr, p.to, p.value, p.expiry, sorted([cardEntry(p.cardId, p.cardSig), ...extra])];
     if (p.cardOnly) args = build([]);
     else args = await withPhone(w, "pay", (pe) => build([pe]), list, phoneSig);
     const rc = await send(w, "pay", args);
@@ -414,11 +433,12 @@ async function received(wallet, fromBlock) {
 }
 
 function historyItem(p) {
+  if (p.kind === "send") return { id: p.id, kind: "sent", merchantName: short(p.to), to: p.to, amount: p.amount, status: p.status, error: p.error, txHash: p.txHash, time: p.finished || p.created };
   return { id: p.id, kind: "payment", merchantName: MERCHANT_NAME, amount: p.amount, status: p.status, error: p.error, cardOnly: !!p.cardOnly, txHash: p.txHash, time: p.finished || p.created };
 }
 function publicPayment(p) {
-  const { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly } = p;
-  return { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly, merchant: MERCHANT, merchantName: MERCHANT_NAME };
+  const { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly, kind, to } = p;
+  return { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly, kind, to, merchant: to || MERCHANT, merchantName: kind === "send" ? short(to) : MERCHANT_NAME };
 }
 
 app.get("/api/wallet/:addr", wrap(async (req, res) => {
@@ -427,7 +447,7 @@ app.get("/api/wallet/:addr", wrap(async (req, res) => {
   const w = walletAt(addr);
   const rec = state[chainKey].wallets[addr] || { names: {}, history: [] };
   const [balance, perTx, daily, spent, frozen, softLimit, softCardOnly, threshold, list] = await Promise.all([token.balanceOf(addr), w.perTxLimit(), w.dailyLimit(), spentToday(w), w.frozen(), w.softLimit(), w.softCardOnly(), w.threshold(), signersOf(w)]);
-  const pending = [...payments.values()].filter((p) => p.wallet.toLowerCase() === addr.toLowerCase() && p.status === "waiting_for_phone").map(publicPayment);
+  const pending = [...payments.values()].filter((p) => p.wallet.toLowerCase() === addr.toLowerCase() && p.kind !== "send" && p.status === "waiting_for_phone").map(publicPayment);
   const history = [...(rec.history || []), ...(await received(addr, rec.createdBlock))].sort((x, y) => y.time - x.time).slice(0, 50);
   res.json({
     v2: true,

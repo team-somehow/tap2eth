@@ -92,6 +92,28 @@ async function main() {
   r = await call(`/api/pay/${pay3}/phone`, { phoneSig: phone.sign(v.pending[0].hash) });
   check("a 20 payment with card 2 + phone is paid", r.status === "paid", r.error || "");
 
+  step("6b. Send to any address (the app taps the card and signs on the same phone)");
+  const friend = require("ethers").getAddress("0x90f79bf6eb2c4f870365e785982e1f101e9b0680");
+  r = await call("/api/send/start", { cardModulus: hexOf(card.modulus), amount: "7", to: "not-an-address" });
+  check("a bad address is refused", !r.ok && /valid address/.test(r.error || ""), r.error);
+  r = await call("/api/send/start", { cardModulus: hexOf(card.modulus), amount: "7", to: wallet });
+  check("sending to your own wallet is refused", !r.ok && /own wallet/.test(r.error || ""), r.error);
+  r = await call("/api/send/start", { cardModulus: hexOf(card.modulus), amount: "90", to: friend });
+  check("a send over the per-payment limit is refused up front", !r.ok && r.error === "OverLimit", r.error);
+  r = await call("/api/send/start", { cardModulus: hexOf(card.modulus), amount: "7", to: friend });
+  check("send gives the app the hash and the 4-byte challenge", r.ok && r.hash && r.challenge === r.hash.slice(2, 10) && r.to === friend, r.error || "");
+  const sendId = r.id, sendHash = r.hash, sendChallenge = r.challenge;
+  v = await view(wallet);
+  const before = Number(v.balance);
+  r = await call(`/api/pay/${sendId}/card`, { cardSig: cardSign(card, sendChallenge) });
+  check("after the card tap it waits for the phone signature", r.status === "waiting_for_phone" && r.kind === "send");
+  v = await view(wallet);
+  check("a send is not shown to the app as a pending shop request", v.pending.length === 0);
+  r = await call(`/api/pay/${sendId}/phone`, { phoneSig: phone.sign(sendHash) });
+  check("phone signs and the 7 is sent", r.status === "paid" && !!r.txHash, r.error || "");
+  v = await view(wallet);
+  check("balance fell by 7 and history shows a sent item to the address", Number(v.balance) === before - 7 && v.history.some((h) => h.kind === "sent" && Number(h.amount) === 7 && h.to === friend));
+
   step("7. Freeze and unfreeze");
   a = await call("/api/freeze/start", { wallet });
   r = await call("/api/freeze/" + a.id, { phoneSig: phone.sign(a.hash) });
