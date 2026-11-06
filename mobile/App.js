@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Animated, AppState, Linking, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Switch, Text, TextInput, Vibration, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as Clipboard from "expo-clipboard";
-import Svg, { Circle, Path, Rect } from "react-native-svg";
+import Svg, { Circle, Path, Rect, SvgXml } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import qrcode from "qrcode-generator";
@@ -12,6 +12,8 @@ import { biometricsReady, createPhoneKey, forgetPhoneKey, signWithPhone } from "
 
 // The backend URL is built into the APK from RELAYER_URL in the repo's root .env (./apk.sh passes it as
 // EXPO_PUBLIC_RELAYER_URL). Without it, a dev build reaches the laptop over USB: `adb reverse tcp:8787 tcp:8787`.
+// The chain the backend runs on (NETWORK in .env). The backend tells us with every wallet read; this is the fallback.
+let NET = { name: "Whitechain testnet", explorer: "https://explorer.testnet.whitechain.io" };
 const RELAYER = (process.env.EXPO_PUBLIC_RELAYER_URL || "http://localhost:8787").replace(/\/+$/, "");
 
 // Minimal NeoBrutalism: thin black borders, small hard shadows on things you press, one accent (yellow). Bank cards keep their own look.
@@ -31,7 +33,7 @@ async function api(path, body) {
     const headers = { "ngrok-skip-browser-warning": "1", ...(body ? { "content-type": "application/json" } : {}) };
     const res = await fetch(RELAYER + path, { headers, ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: ctl.signal });
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(j.error || `Server error (${res.status})`);
+    if (!res.ok) { const err = new Error(j.error || `Server error (${res.status})`); err.fromServer = true; throw err; }
     return j;
   } catch (e) {
     if (e && e.name === "AbortError") throw new Error("The server took too long to answer.");
@@ -53,6 +55,8 @@ const stopCard = () => { userCancelAt = Date.now(); cancelCard(); };
 function explain(e) {
   if (Date.now() - userCancelAt < 5000) return "";
   const m = String(e?.message || e);
+  // An error the server sent is never the person cancelling: show what it says (a dropped chain connection, a decline...).
+  if (e?.fromServer && /cancel/i.test(m)) return "The server couldn't finish this. Nothing was paid. Try again.";
   if (/permanently invalidated|KeyPermanentlyInvalidated|NO_KEY/i.test(m)) return "This phone's key is no longer valid (fingerprints were changed). Remove the wallet in Cards and create it again.";
   if (/lockout|too many attempts/i.test(m)) return "Too many wrong fingerprints. Wait 30 seconds and try again.";
   if (/no biometric|not enrolled|hardware unavailable|BIOMETRIC_ERROR/i.test(m)) return "Fingerprint isn't available. Check that a fingerprint is set up in your phone's settings.";
@@ -357,8 +361,22 @@ function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, 
           <View key={p.id} style={i > 0 && s.actBorder}><ActivityRow p={p} hidden={hidden} onOpen={onOpen} /></View>
         ))}
       </View>
-
+      <PoweredBy />
     </ScrollView>
+  );
+}
+
+// "Powered by Arc" / "Powered by Whitechain": which chain the backend runs on. The backend can switch it off (POWERED_BY=off).
+// Whitechain's own logo (from whitechain.io/logo.svg); other chains show their name.
+const WHITECHAIN_LOGO = "<svg width=\"833\" height=\"152\" viewBox=\"0 0 833 152\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\"> <path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M32 0C14.3269 0 0 14.3269 0 32V90C0 99.409 4.06077 107.869 10.5253 113.725L40.5444 143.744L62.2881 122H90C107.673 122 122 107.673 122 90V62.2881L143.771 40.5166L112.879 9.62451L112.878 9.62593C107.068 3.68637 98.9647 0 90 0H32Z\" fill=\"#080A28\"/> <path d=\"M30.0002 61.9998C30.0002 44.3266 44.3271 29.9998 62.0002 29.9998H120C137.673 29.9998 152 44.3266 152 61.9998V120C152 137.673 137.673 152 120 152H62.0002C44.3271 152 30.0002 137.673 30.0002 120V61.9998Z\" fill=\"#0066FF\"/> <path d=\"M30 56C30 41.6406 41.6406 30 56 30H122V96C122 110.359 110.359 122 96 122H30V56Z\" fill=\"white\"/> <path d=\"M61.5477 90.4523C51.4838 80.3884 51.4838 64.0642 61.5477 54.0002L97.9998 90.4523C87.9358 100.516 71.6116 100.516 61.5477 90.4523Z\" fill=\"#080A28\"/> <path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M362.266 85.125V117H346.016V69.625L334.016 69C313.891 68 303.391 60.25 303.391 39V29.5H319.641V53.75L336.266 54.75C348.641 55.5 362.266 60 362.266 85.125ZM303.266 117V66.75H319.516V117H303.266ZM387.086 29.5C381.961 29.5 378.461 33 378.461 38.125C378.461 43.25 381.961 46.75 387.086 46.75C392.211 46.75 395.711 43.25 395.711 38.125C395.711 33 392.211 29.5 387.086 29.5ZM378.961 54.5V117H395.211V54.5H378.961ZM653.403 117V85.125C653.403 60 639.778 55.5 627.403 54.75L610.778 53.75V29.5H594.528V39C594.528 60.25 605.028 68 625.153 69L637.153 69.625V117H653.403ZM594.403 66.75V117H610.653V66.75H594.403ZM747.438 29.5C742.312 29.5 738.812 33 738.812 38.125C738.812 43.25 742.312 46.75 747.438 46.75C752.562 46.75 756.062 43.25 756.062 38.125C756.062 33 752.562 29.5 747.438 29.5ZM739.312 54.5V117H755.562V54.5H739.312ZM832.603 117V84.5C832.603 59.375 818.978 54.5 806.603 54.5H773.603V117H789.853V69H816.353V117H832.603ZM689.974 117C675.474 117 665.849 109.5 665.849 98C665.849 86.375 675.099 79.625 689.724 79L706.349 78.25V68.875H674.599V54.5H699.724C713.849 54.5 723.224 61.75 723.224 72.875C723.224 84 714.224 90.5 700.099 91.125L682.724 91.875V102.625H707.224V90.375H723.224V117H689.974ZM561.859 117C541.734 117 531.234 108.625 531.234 87.375V84.125C531.234 62.875 541.734 54.5 561.859 54.5H580.609V68.25H547.484V103.25H580.609V117H561.859ZM490.57 78.375V78.25H476.195V68.125H503.07V78.375H490.57ZM476.195 89.875C480.195 91.25 485.07 91.875 490.57 91.875H519.32V84.125C519.32 62.875 508.82 54.5 488.695 54.5H459.945V62.25C459.945 77.625 465.445 86.25 476.195 89.875ZM476.195 102.125V89.875H459.945C459.945 108.625 470.445 117 490.57 117H517.32V102.125H476.195ZM449.376 117H442.626C422.501 117 412.001 108.625 412.001 87.375V66.875H427.876C417.376 63.375 412.001 55 412.001 39.75H428.251V54.5H449.376V68.875H442.626C437.126 68.875 432.251 68.25 428.251 67V102.625H449.376V117ZM264.25 117H285.75V54.5H269.5V102.125H249.875V54.5H233.625V87.375C233.625 108.625 244.125 117 264.25 117ZM229.125 117H235.875V102.125H214.75V54.5H198.5V87.375C198.5 108.625 209 117 229.125 117Z\" fill=\"#080A28\"/> </svg>";
+function PoweredBy() {
+  if (!NET.poweredBy) return null;
+  const logo = NET.poweredBy === "Whitechain";
+  return (
+    <View style={s.poweredRow} accessible accessibilityLabel={`Powered by ${NET.poweredBy}`}>
+      <Text style={s.powered}>POWERED BY</Text>
+      {logo ? <SvgXml xml={WHITECHAIN_LOGO} width={86} height={16} /> : <Text style={[s.powered, s.poweredName]}>{NET.poweredBy.toUpperCase()}</Text>}
+    </View>
   );
 }
 
@@ -758,12 +776,12 @@ function ReceiveScreen({ wallet, onBack, onCopy }) {
     <ScrollView contentContainerStyle={s.page}>
       <Back title="Home" onPress={onBack} />
       <Text style={s.pageTitle}>Receive</Text>
-      <Text style={s.soft}>Show this QR code, or share the address. Send only the stablecoin shown in your balance, on the Whitechain network. Other tokens and networks aren't supported and may be lost.</Text>
+      <Text style={s.soft}>Show this QR code, or share the address. Send only the stablecoin shown in your balance, on the {NET.name} network. Other tokens and networks aren't supported and may be lost.</Text>
       <View style={s.qrBox}><QR text={wallet} /></View>
       <Text selectable style={s.addrFull}>{wallet}</Text>
       <Button title="Copy address" onPress={onCopy} />
       <Button kind="soft" title="Share address" onPress={() => Share.share({ message: wallet })} />
-      <Text style={[s.small, { marginTop: 14, textAlign: "center" }]}>Network: Whitechain Sepolia (testnet)</Text>
+      <Text style={[s.small, { marginTop: 14, textAlign: "center" }]}>Network: {NET.name}</Text>
     </ScrollView>
   );
 }
@@ -876,7 +894,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
         <Text style={s.sheetAmount}>{hidden ? MASK : usd(result.amount)}</Text>
         <Text style={[s.soft, { marginTop: 2, marginBottom: 18, textAlign: "center" }]}>to {shortAddr(result.to)}</Text>
         <View style={{ alignSelf: "stretch" }}>
-          {!!result.txHash && <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`https://explorer.testnet.whitechain.io/tx/${result.txHash}`)} />}
+          {!!result.txHash && <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`${NET.explorer}/tx/${result.txHash}`)} />}
           <Button big title="Done" onPress={onBack} />
         </View>
       </View>
@@ -896,7 +914,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
               <Text style={{ fontWeight: "800" }}>{parsed.slice(0, 8)}</Text>{parsed.slice(8, -6)}<Text style={{ fontWeight: "800" }}>{parsed.slice(-6)}</Text>
             </Text>
           </View>
-          <View style={s.detailRow}><Text style={s.small}>Network</Text><Text style={s.bold}>Whitechain Sepolia</Text></View>
+          <View style={s.detailRow}><Text style={s.small}>Network</Text><Text style={s.bold}>{NET.name}</Text></View>
           <View style={s.detailRow}><Text style={s.small}>Approved by</Text><Text style={s.bold}>Card and fingerprint</Text></View>
         </View>
         {!known && (
@@ -911,7 +929,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
     <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
       <Back title="Home" onPress={onBack} />
       <Text style={s.pageTitle}>Send</Text>
-      <Text style={s.soft}>To any wallet address on Whitechain. Approve with card and fingerprint.</Text>
+      <Text style={s.soft}>To any wallet address on {NET.name}. Approve with card and fingerprint.</Text>
 
       <Text style={[s.small, { marginTop: 18 }]}>To</Text>
       <Field value={addr} onChangeText={setAddr} placeholder="0x… wallet address" autoCapitalize="none" autoCorrect={false} spellCheck={false} />
@@ -1013,7 +1031,7 @@ function DetailBody({ p, hidden, onClose }) {
         {p.kind === "sent" && line("To", p.to, true)}
       </View>
       {!!p.txHash && (
-        <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`https://explorer.testnet.whitechain.io/tx/${p.txHash}`)} />
+        <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`${NET.explorer}/tx/${p.txHash}`)} />
       )}
       <Button kind="ghost" title="Close" onPress={onClose} />
     </>
@@ -1071,6 +1089,7 @@ function Main({ wallet, onForget }) {
 
   const refresh = useCallback(async (fresh) => {
     const d = await api("/api/wallet/" + wallet + (fresh ? "?fresh=1" : ""));
+    if (d.net) NET = d.net;
     setW(d);
     if (!d.stale) setUpdatedAt(Date.now());
     const next = d.pending.find((p) => !seen.current.has(p.id));
@@ -1352,6 +1371,9 @@ const s = StyleSheet.create({
   sectionTitle: { fontSize: 18, fontWeight: "800", color: C.ink },
   link2: { fontSize: 14, fontWeight: "700", color: C.ink, textDecorationLine: "underline" },
   // small mono uppercase labels, as on etharcade / uthale / betterwallet
+  poweredRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 26, marginBottom: 6 },
+  powered: { fontFamily: "monospace", fontSize: 11, fontWeight: "600", color: C.muted, letterSpacing: 1.2 },
+  poweredName: { color: C.ink },
   eyebrow: { fontFamily: "monospace", fontSize: 12, fontWeight: "600", color: C.soft, letterSpacing: 1, textTransform: "uppercase" },
   day: { fontFamily: "monospace", fontSize: 12, fontWeight: "600", color: C.soft, letterSpacing: 1, marginTop: 20, marginBottom: 8 },
   sec: { fontFamily: "monospace", fontSize: 12, fontWeight: "600", color: C.soft, letterSpacing: 1, marginTop: 26, marginBottom: 8 },
