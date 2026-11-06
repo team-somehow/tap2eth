@@ -1,0 +1,20 @@
+{
+  "factoryV2": "0xd7783c67607704a19018015E184fFd008392A363",
+  "factoryV2Tx": "0xa0f864a8a3acf12cb80130c594c6db245a702c416b2140b948b146b825d7aca7",
+  "v2DeployedAt": "2026-11-06T12:38:12.766Z",
+  "v2History": [
+    {
+      "factoryV2": "0x5F9b283cf8D01C5129741269F7C1d289cD0B8392",
+      "walletImplementationV2": "0xd70413c7317cd2d9BDfB563486a958bac97f5eD8",
+      "factoryV2Tx": "0xd62be40ac5a1dc06fdb3e112ced34cd402c2a03920baaa2a4df81cc9f9f07bb3",
+      "deployedAt": "2026-11-06T12:12:53.141Z"
+    }
+  ],
+  "chainId": 5042002,
+  "network": "Arc testnet",
+  "deployer": "0x7ee85B080701330bf53Be62B7E72fcDD034eCCac",
+  "token": "0x3600000000000000000000000000000000000000",
+  "tokenDecimals": 6,
+  "tap2eth": "0xd7783c67607704a19018015E184fFd008392A363",
+  "contract": "Tap2Eth (single contract: registry + wallet logic, wallets are clones)"
+}

@@ -33,7 +33,7 @@ module.exports = {
   },
   // Contract source verification on the Whitechain Blockscout explorer (the API key can be any non-empty string).
   etherscan: {
-    apiKey: { whitechainSepolia: "blockscout" },
+    apiKey: { whitechainSepolia: "blockscout", arcTestnet: "blockscout" },
     customChains: [
       {
         network: "whitechainSepolia",
@@ -42,6 +42,11 @@ module.exports = {
           apiURL: "https://explorer.testnet.whitechain.io/api",
           browserURL: "https://explorer.testnet.whitechain.io",
         },
+      },
+      {
+        network: "arcTestnet",
+        chainId: 5042002,
+        urls: { apiURL: "https://explorer.testnet.arc.io/api", browserURL: "https://explorer.testnet.arc.io" },
       },
     ],
   },
@@ -55,6 +60,12 @@ module.exports = {
       url: process.env.RPC_URL || "https://rpc.ankr.com/whitechain_testnet",
       chainId: 1874,
       accounts: process.env.RELAYER_KEY ? [process.env.RELAYER_KEY] : [],
+    },
+    // Arc testnet (chain ID 5042002). USDC is the gas token, so the relayer pays fees in USDC.
+    arcTestnet: {
+      url: process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network",
+      chainId: 5042002,
+      accounts: process.env.ARC_RELAYER_KEY ? [process.env.ARC_RELAYER_KEY] : [],
     },
     baseSepolia: {
       url: process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org",
