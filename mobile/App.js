@@ -7,14 +7,24 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import qrcode from "qrcode-generator";
 import { keccak_256 } from "@noble/hashes/sha3.js";
-import { withCard, cancelCard } from "./lib/emv";
+import { withCard, cancelCard, getCardPhase, onCardPhase } from "./lib/emv";
+import { cue, soundOn, setSoundOn } from "./lib/sounds";
 import { biometricsReady, createPhoneKey, forgetPhoneKey, signWithPhone } from "./lib/phone";
 
 // The backend URL is built into the APK from RELAYER_URL in the repo's root .env (./apk.sh passes it as
 // EXPO_PUBLIC_RELAYER_URL). Without it, a dev build reaches the laptop over USB: `adb reverse tcp:8787 tcp:8787`.
 // The chain the backend runs on (NETWORK in .env). The backend tells us with every wallet read; this is the fallback.
-let NET = { name: "Whitechain testnet", explorer: "https://explorer.testnet.whitechain.io" };
+let NET = process.env.EXPO_PUBLIC_NETWORK === "sepolia" ? { name: "Ethereum Sepolia", explorer: "https://sepolia.etherscan.io" } : { name: "Whitechain testnet", explorer: "https://explorer.testnet.whitechain.io" };
 const RELAYER = (process.env.EXPO_PUBLIC_RELAYER_URL || "http://localhost:8787").replace(/\/+$/, "");
+// One backend URL serves several networks, one route each (/whitechain, /sepolia). The network is chosen in the secret settings
+// (hold the app title, or the card on Home, for 2 seconds). Each network has its own wallet, kept under its own key.
+// A build can fix the network (EXPO_PUBLIC_NETWORK=whitechain|sepolia, see ./apk.sh): that app never switches.
+const FIXED_NET = (process.env.EXPO_PUBLIC_NETWORK || "").toLowerCase();
+let NETID = FIXED_NET || null; // "whitechain" | "sepolia" | null = whatever the backend's default is
+const netRoute = () => (NETID ? "/" + NETID : "");
+const wkey = () => (!NETID || NETID === "whitechain" ? "wallet" : `wallet:${NETID}`);
+const rkey = () => (!NETID || NETID === "whitechain" ? "recovery" : `recovery:${NETID}`);
+let openSecret = () => {}; // set by the app root; opens the secret settings
 
 // Minimal NeoBrutalism: thin black borders, small hard shadows on things you press, one accent (yellow). Bank cards keep their own look.
 const C = { paper: "#F3F0E8", surface: "#FFFFFF", ink: "#0A0A0A", soft: "#4A4A4A", muted: "#8A8A8A", line: "#DCD8CC", yellow: "#FFE600", greenInk: "#0E7A3E", redInk: "#C4005A", card: "#14213D", cardAlt: "#2B3A67", gold: "#C9A14A" };
@@ -25,13 +35,13 @@ const hard = (n = 3, color = C.ink) => ({ boxShadow: `${n - 1}px ${n - 1}px 0px 
 const box = { borderWidth: 2, borderColor: C.ink };
 const R = 12;
 
-async function api(path, body) {
+async function api(path, body, timeoutMs = 20000) {
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 20000); // never hang for a minute on a slow network
+  const t = setTimeout(() => ctl.abort(), timeoutMs); // never hang for a minute on a slow network
   try {
     // ngrok's free plan can answer with a "visit site" page instead of the API; this header skips it.
     const headers = { "ngrok-skip-browser-warning": "1", ...(body ? { "content-type": "application/json" } : {}) };
-    const res = await fetch(RELAYER + path, { headers, ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: ctl.signal });
+    const res = await fetch(RELAYER + netRoute() + path, { headers, ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: ctl.signal });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) { const err = new Error(j.error || `Server error (${res.status})`); err.fromServer = true; throw err; }
     return j;
@@ -43,10 +53,35 @@ async function api(path, body) {
   }
 }
 
-// Amounts are shown as plain dollars (the token is a dollar stablecoin).
-const usd = (n) => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const usdShort = (n) => "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
+/**
+ * Sends the fingerprint approval of a payment. An ETH swap waits for a block, so this can take 20+ seconds: wait longer,
+ * and if the answer is lost (slow network, the phone's own timeout) ask the server what happened instead of calling a
+ * payment that went through "cancelled".
+ */
+async function submitPhone(id, phoneSig) {
+  try { return await api(`/api/pay/${id}/phone`, { phoneSig }, 120000); }
+  catch (e) {
+    if (e?.fromServer) throw e; // the server answered with an error: believe it
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const p = await api(`/api/pay/${id}`);
+        if (p.status === "paid") return p;
+        if (p.status === "failed" || p.status === "rejected") { const err = new Error(p.error || "The payment failed."); err.fromServer = true; throw err; }
+      } catch (e2) { if (e2?.fromServer) throw e2; }
+    }
+    throw e;
+  }
+}
+
+// Amounts say which token they are in (USDT, or whatever the backend's stablecoin is), never a bare "$".
+const coin = () => NET.symbol || "USDT";
+const usd = (n) => Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " " + coin();
+const usdShort = (n) => Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 }) + " " + coin();
 const MASK = "••••";
+const trimNum = (n, d) => (Number(n).toFixed(d).replace(/\.?0+$/, "") || "0");
+/** An amount in its own unit: ETH with up to 8 decimals, the dollar tokens as dollars. */
+const fmtAmt = (n, sym) => (sym === "ETH" ? `${trimNum(n, 8)} ETH` : sym === "UNI" ? `${trimNum(n, 4)} UNI` : usd(n));
 
 // When the person taps Cancel during a card wait, the NFC request rejects with a bare "Error". That is not a failure: stay quiet.
 let userCancelAt = 0;
@@ -55,12 +90,15 @@ const stopCard = () => { userCancelAt = Date.now(); cancelCard(); };
 function explain(e) {
   if (Date.now() - userCancelAt < 5000) return "";
   const m = String(e?.message || e);
+  console.warn("[tap2eth] error:", e?.name, m, e?.fromServer ? "(from server)" : "(on the phone)"); // so adb logcat shows what really failed
   // An error the server sent is never the person cancelling: show what it says (a dropped chain connection, a decline...).
   if (e?.fromServer && /cancel/i.test(m)) return "The server couldn't finish this. Nothing was paid. Try again.";
+  if (/InsufficientEth/i.test(m)) return "Not enough ETH in this wallet for that.";
+  if (/No Uniswap pool/i.test(m)) return "Uniswap can't swap that amount right now. Try a smaller amount.";
   if (/permanently invalidated|KeyPermanentlyInvalidated|NO_KEY/i.test(m)) return "This phone's key is no longer valid (fingerprints were changed). Remove the wallet in Cards and create it again.";
   if (/lockout|too many attempts/i.test(m)) return "Too many wrong fingerprints. Wait 30 seconds and try again.";
   if (/no biometric|not enrolled|hardware unavailable|BIOMETRIC_ERROR/i.test(m)) return "Fingerprint isn't available. Check that a fingerprint is set up in your phone's settings.";
-  if (/cancel/i.test(m)) return "Cancelled.";
+  if (/cancel/i.test(m)) return `Cancelled. (${m.slice(0, 90)})`; // the raw reason is shown too, to find out what was cancelled
   if (m.includes("OverLimit")) return "Declined: this payment is over your spending limit.";
   if (m.includes("IsFrozen")) return "Declined: your wallet is frozen.";
   if (m.includes("Expired")) return "This request expired. Ask the merchant to charge again.";
@@ -77,13 +115,14 @@ function explain(e) {
 /** One line for the activity list: who, what happened, and how to draw the amount. */
 function rowMeta(p) {
   if (p.kind === "received") return { title: "Received", sub: p.from ? `From ${p.from}` : "Money in", tone: "in" };
+  if (p.kind === "swap") return p.status === "paid" ? { title: "Swapped ETH to USDT", sub: p.ethPaid ? `Paid ${trimNum(p.ethPaid, 8)} ETH · Uniswap` : "Uniswap", tone: "in" } : { title: "Swap", sub: "Didn't go through", tone: "dead", bad: true };
   if (p.kind === "sent") {
     const title = `Sent to ${p.merchantName}`;
     if (p.status === "paid") return { title, sub: "Sent", tone: "out" };
     const e = String(p.error || "");
     return { title, sub: e.includes("OverLimit") ? "Declined: over your limit" : e.includes("IsFrozen") ? "Blocked, wallet was frozen" : "Didn't go through", tone: "dead", bad: true };
   }
-  if (p.status === "paid") return { title: p.merchantName, sub: p.cardOnly ? "Paid with card only" : "Paid", tone: "out" };
+  if (p.status === "paid") return { title: p.merchantName, sub: p.ethPaid ? `Paid with ${trimNum(p.ethPaid, 8)} ETH · Uniswap` : p.cardOnly ? "Paid with card only" : "Paid", tone: "out" };
   if (p.status === "rejected") return { title: p.merchantName, sub: "You declined", tone: "dead" };
   const e = String(p.error || "");
   const sub = e.includes("OverLimit") ? "Declined: over your limit" : e.includes("IsFrozen") ? "Blocked, wallet was frozen" : "Didn't go through";
@@ -116,6 +155,7 @@ function Icon({ name, size = 22, color = C.ink, sw = 2.2 }) {
       {name === "up" && <Path d="M7 17L17 7M8 7h9v9" {...p} />}
       {name === "down" && <Path d="M17 7L7 17M16 17H7V8" {...p} />}
       {name === "scan" && <Path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 12h10" {...p} />}
+      {name === "swap" && <Path d="M7 4L3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7" {...p} />}
       {name === "clock" && (<><Circle cx="12" cy="12" r="10" {...p} /><Path d="M12 6v6l4 2" {...p} /></>)}
     </Svg>
   );
@@ -237,7 +277,7 @@ function CardTile({ name, label, frozen, alt }) {
 }
 function ActivityRow({ p, hidden, onOpen }) {
   const m = rowMeta(p);
-  const amount = hidden ? MASK : (m.tone === "in" ? "+" : m.tone === "out" ? "−" : "") + usd(p.amount);
+  const amount = hidden ? MASK : (m.tone === "in" ? "+" : m.tone === "out" ? "−" : "") + fmtAmt(p.amount, p.symbol);
   return (
     <Pressable style={({ pressed }) => [s.actRow, pressed && { backgroundColor: C.paper }]} onPress={() => onOpen && onOpen(p)}>
       <View style={{ flex: 1, paddingRight: 8 }}>
@@ -267,11 +307,11 @@ function Welcome({ onDone, onRecover }) {
         st = await api("/api/signup/start", { ...phone, cardModulus: key.modulus, cardExponent: key.exponent });
         return st.existing ? null : st.challenge;
       });
-      if (st.existing) { await AsyncStorage.setItem("wallet", st.wallet); return onDone(st.wallet); }
+      if (st.existing) { await AsyncStorage.setItem(wkey(), st.wallet); return onDone(st.wallet); }
       setStep("creating");
       const phoneSig = await signWithPhone(st.hash, "Create your Tap2ETH wallet", "Confirm with your fingerprint");
       const r = await api("/api/signup/" + st.id, { cardSig: card.signature, phoneSig });
-      await AsyncStorage.setItem("wallet", r.wallet);
+      await AsyncStorage.setItem(wkey(), r.wallet);
       onDone(r.wallet);
     } catch (e) {
       setErr(explain(e));
@@ -291,7 +331,7 @@ function Welcome({ onDone, onRecover }) {
   }
   return (
     <ScrollView contentContainerStyle={s.page}>
-      <Text style={[s.display, { marginTop: 40 }]}>Pay with the bank card you already have</Text>
+      <Pressable onLongPress={() => openSecret()} delayLongPress={2000}><Text style={[s.display, { marginTop: 40 }]}>Pay with the bank card you already have</Text></Pressable>
       <Text style={s.lede}>Here's how it works:</Text>
       {[["1", "The shop enters the amount"], ["2", "You tap your card"], ["3", "This phone shows the amount. You approve it here. Your card and phone both complete the multi-sign, and the shop is paid."]].map(([n, t]) => (
         <View key={n} style={s.howRow}>
@@ -309,14 +349,14 @@ function Welcome({ onDone, onRecover }) {
 
 // ------------------------------------------------------------------ tabs
 
-function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, onSend, onReceive, refreshControl }) {
+function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, onSend, onReceive, onSwap, refreshControl }) {
   const frozen = !!w?.frozen;
   const pct = w ? Math.min(100, (100 * Number(w.spentToday)) / Number(w.dailyLimit || 1)) : 0;
   const recent = (w?.history || []).slice(0, 5);
   const addr = wallet ? `${wallet.slice(0, 6)}…${wallet.slice(-4)}` : "";
   return (
     <ScrollView contentContainerStyle={s.page} refreshControl={refreshControl}>
-      <View style={s.card}>
+      <Pressable style={s.card} onLongPress={() => openSecret()} delayLongPress={2000}>
         <View style={s.cardRow}><Chip /><View style={{ alignItems: "flex-end", gap: 6 }}><Waves /><Text style={[s.pillText, frozen && { color: "#1C4F7A" }]}>{frozen ? "FROZEN" : "ACTIVE"}</Text></View></View>
         <View>
           <Text style={s.cardLabel}>Wallet address</Text>
@@ -328,13 +368,14 @@ function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, 
           </View>
         </View>
         {frozen && <View style={s.frost}><Text style={s.frostText}>🔒 Frozen</Text></View>}
-      </View>
+      </Pressable>
 
       <Text style={[s.eyebrow, { marginTop: 26 }]}>Wallet balance</Text>
       <View style={s.balanceLine}>
         <Text style={s.amount}>{w ? (hidden ? "••••••" : usd(w.balance)) : "–"}</Text>
         <Eye hidden={hidden} onPress={toggleHidden} />
       </View>
+      {!!w?.tokens && <Text style={[s.soft, { marginTop: 2 }]}>{hidden ? "•••• ETH" : `+ ${trimNum(w.ethBalance, 6)} ETH`}</Text>}
       {w && (
         <>
           <Text style={s.meterText}>{hidden ? "Spent today ••••" : `${usd(w.spentToday)} of ${usd(w.dailyLimit)} spent today`}</Text>
@@ -349,6 +390,11 @@ function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, 
         <Press style={[s.actionBtn, { backgroundColor: C.surface }]} onPress={onReceive} accessibilityLabel="Receive money">
           <Icon name="down" size={20} /><Text style={s.actionTxt}>Receive</Text>
         </Press>
+        {!!w?.tokens && (
+          <Press style={[s.actionBtn, { backgroundColor: C.surface }]} disabled={frozen} onPress={onSwap} accessibilityLabel="Swap ETH to USDT">
+            <Icon name="swap" size={20} /><Text style={s.actionTxt}>Swap</Text>
+          </Press>
+        )}
       </View>
       {frozen && <Text style={[s.small, { marginTop: 12 }]}>Sending is off while the wallet is frozen. Unfreeze it in Cards.</Text>}
 
@@ -603,8 +649,8 @@ function RecoverScreen({ resume, onDone, onBack }) {
   const getPhone = () => (phoneRef.current ||= createPhoneKey());
 
   const enter = async (w) => {
-    await AsyncStorage.setItem("wallet", w);
-    await AsyncStorage.removeItem("recovery");
+    await AsyncStorage.setItem(wkey(), w);
+    await AsyncStorage.removeItem(rkey());
     onDone(w);
   };
   const stop = () => { aborted.current = true; stopCard(); resumeTap.current?.(); setHint(""); setStage("intro"); };
@@ -622,7 +668,7 @@ function RecoverScreen({ resume, onDone, onBack }) {
         return st.id ? st.challenge : null;
       });
       if (st.existing) return enter(st.wallet); // this phone is already a signer
-      if (st.pending) { await AsyncStorage.setItem("recovery", JSON.stringify({ wallet: st.wallet })); setWallet(st.wallet); return setStage("wait"); }
+      if (st.pending) { await AsyncStorage.setItem(rkey(), JSON.stringify({ wallet: st.wallet })); setWallet(st.wallet); return setStage("wait"); }
       setStage("mid");
       await new Promise((r) => { resumeTap.current = r; });
       if (aborted.current) return;
@@ -645,7 +691,7 @@ function RecoverScreen({ resume, onDone, onBack }) {
       const phoneSig = await signWithPhone(st.hash, "Recover your wallet", "Use this phone from now on");
       setStage("sending");
       const r = await api("/api/recover/" + st.id, { cards: [{ cardModulus: c1.modulus, cardSig: c1.signature }, { cardModulus: c2.modulus, cardSig: c2.signature }], phoneSig });
-      await AsyncStorage.setItem("recovery", JSON.stringify({ wallet: r.wallet }));
+      await AsyncStorage.setItem(rkey(), JSON.stringify({ wallet: r.wallet }));
       setWallet(r.wallet);
       setStage("wait");
     } catch (e) {
@@ -685,7 +731,7 @@ function RecoverScreen({ resume, onDone, onBack }) {
       await enter(wallet);
     } catch (e) { setErr(explain(e)); setBusy(false); }
   }
-  const startOver = async () => { await AsyncStorage.removeItem("recovery"); setInfo(null); setWallet(null); setErr(""); setStage("intro"); };
+  const startOver = async () => { await AsyncStorage.removeItem(rkey()); setInfo(null); setWallet(null); setErr(""); setStage("intro"); };
 
   if (stage === "intro") {
     return (
@@ -794,19 +840,34 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
   const [result, setResult] = useState(null);
   const [perm, askPerm] = useCameraPermissions();
   const scanLock = useRef(false);
+  const swapNet = !!w.tokens; // Ethereum Sepolia: ETH or USDT can be sent, and USDT can be paid for with ETH
+  const [asset, setAsset] = useState("usdt");
+  const payWith = "usdt"; // a USDT send is paid from USDT; ETH is sent as ETH
+  const [steps, setSteps] = useState([]);
+  const [quote, setQuote] = useState(null);
+  const eth = asset === "eth";
+  const sym = eth ? "ETH" : "USDT";
+  const show = (n) => fmtAmt(n, sym);
 
   const parsed = parseAddress(addr);
   const addrErr = !addr.trim() ? ""
     : !parsed ? "That doesn't look like a wallet address (0x followed by 40 characters)."
     : !checksumOk(parsed) ? "The capital letters in this address don't match its checksum. It may be mistyped."
     : parsed.toLowerCase() === wallet.toLowerCase() ? "That's your own wallet." : "";
-  const value = /^\d+([.,]\d{0,2})?$/.test(amt.trim()) ? Number(amt.trim().replace(",", ".")) : NaN;
-  const left = Math.max(0, Number(w.dailyLimit) - Number(w.spentToday));
+  const value = new RegExp(`^\\d+([.,]\\d{0,${eth ? 8 : 2}})?$`).test(amt.trim()) ? Number(amt.trim().replace(",", ".")) : NaN;
+  const left = Math.max(0, Number(eth ? w.ethDailyLimit : w.dailyLimit) - Number(eth ? w.ethSpentToday : w.spentToday));
   const amtErr = !amt.trim() ? ""
-    : !(value > 0) ? "Enter an amount like 12.50."
-    : value > Number(w.balance) ? "That's more than your balance."
+    : !(value > 0) ? (eth ? "Enter an amount like 0.001." : "Enter an amount like 12.50.")
+    : eth ? (value > Number(w.ethBalance) ? "That's more than your ETH balance."
+      : value > Number(w.ethPerTxLimit) ? `Over your per-send limit of ${trimNum(w.ethPerTxLimit, 6)} ETH.`
+      : value > left ? `Over what's left of today's ETH limit (${trimNum(left, 6)} ETH).` : "")
+    : payWith === "usdt" && value > Number(w.balance) ? "That's more than your USDT balance."
     : value > Number(w.perTxLimit) ? `Over your per-payment limit of ${usd(w.perTxLimit)}. You can raise it in Cards.`
     : value > left ? `Over what's left of today's limit (${usd(left)}).` : "";
+  useEffect(() => { // the ETH price of a USDT send paid with ETH, shown before the card is tapped
+    if (stage === "review" && swapNet && !eth && payWith === "eth" && value > 0) api(`/api/quote?amount=${value}`).then(setQuote).catch(() => setQuote(null));
+    else setQuote(null);
+  }, [stage, swapNet, eth, payWith, value]);
   const ok = !!parsed && !addrErr && value > 0 && !amtErr;
   const recents = [...new Set((w.history || []).filter((p) => p.kind === "sent" && p.status === "paid" && p.to).map((p) => p.to))].slice(0, 3);
   const known = !!parsed && recents.some((a) => a.toLowerCase() === parsed.toLowerCase());
@@ -839,23 +900,28 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
       setStage("tap");
       let st;
       const card = await withCard(async (key) => {
-        st = await api("/api/send/start", { cardModulus: key.modulus, amount: String(value), to: parsed });
+        st = await api("/api/send/start", { cardModulus: key.modulus, amount: String(value), to: parsed, ...(swapNet ? { asset, payWith } : {}) });
         if (st.wallet.toLowerCase() !== wallet.toLowerCase()) throw new Error("This card belongs to a different wallet.");
         if (st.to.toLowerCase() !== parsed.toLowerCase()) throw new Error("The server changed the recipient. Nothing was sent.");
         return st.challenge;
       });
       setStage("sign");
-      const phoneSig = await signWithPhone(st.hash, `Send ${usd(value)}`, `to ${parsed.slice(0, 8)}…${parsed.slice(-6)}`);
+      const phoneSig = await signWithPhone(st.hash, `Send ${show(value)}`, `to ${parsed.slice(0, 8)}…${parsed.slice(-6)}`);
       setStage("sending");
       await api(`/api/pay/${st.id}/card`, { cardSig: card.signature });
-      const r = await api(`/api/pay/${st.id}/phone`, { phoneSig });
+      const stop = st.mode === "swap" ? trackSteps(st.id, setSteps) : () => {};
+      let r;
+      try { r = await submitPhone(st.id, phoneSig); } finally { stop(); }
       if (r.status !== "paid") throw new Error(r.error || "The payment failed.");
-      Vibration.vibrate([0, 40, 60, 40]);
-      setResult({ amount: String(value), to: parsed, txHash: r.txHash });
+      if (r.steps && st.mode === "swap") setSteps(r.steps);
+      cue("paid");
+      setResult({ amount: String(value), to: parsed, txHash: r.txHash, symbol: sym, ethPaid: r.swap?.ethPaid });
       setStage("done");
       refresh().catch(() => {});
     } catch (e) {
-      say(explain(e), true);
+      const msg = explain(e);
+      if (msg) cue("declined");
+      say(msg, true);
       setStage("review");
     }
   }
@@ -873,6 +939,8 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
     );
   }
 
+  if (stage === "sending" && steps.length) return <View style={s.center}><SwapProgress steps={steps} sub={`${show(value)} to ${shortAddr(parsed)}`} /></View>;
+
   if (stage === "tap" || stage === "sign" || stage === "sending") {
     const at = stage === "tap" ? 1 : stage === "sign" ? 2 : 3;
     return (
@@ -880,7 +948,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
         <Steps at={at} labels={["Tap card", "Fingerprint", "Send"]} />
         {stage === "tap" ? <ScanArt /> : <ActivityIndicator size="large" color={C.ink} />}
         <Text style={s.h2}>{stage === "tap" ? "Tap your card" : stage === "sign" ? "Confirm it's you" : "Sending…"}</Text>
-        <Text style={[s.lede, s.mid]}>{stage === "tap" ? `Hold your bank card to the back of the phone to send ${usd(value)}. We don't store the card number.` : stage === "sign" ? "Use your fingerprint when asked." : "Your payment is being recorded on the network."}</Text>
+        <Text style={[s.lede, s.mid]}>{stage === "tap" ? `Hold your bank card to the back of the phone to send ${show(value)}. We don't store the card number.` : stage === "sign" ? "Use your fingerprint when asked." : "Your payment is being recorded on the network."}</Text>
         {stage === "tap" && <Button kind="ghost" title="Cancel" onPress={() => { stopCard(); setStage("review"); }} />}
       </View>
     );
@@ -889,10 +957,11 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
   if (stage === "done" && result) {
     return (
       <View style={s.center}>
-        <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View>
+        <DoneMark eth={result.symbol === "ETH" || !!result.ethPaid} />
         <Text style={s.paidTitle}>Sent</Text>
-        <Text style={s.sheetAmount}>{hidden ? MASK : usd(result.amount)}</Text>
-        <Text style={[s.soft, { marginTop: 2, marginBottom: 18, textAlign: "center" }]}>to {shortAddr(result.to)}</Text>
+        <Text style={s.sheetAmount}>{hidden ? MASK : fmtAmt(result.amount, result.symbol)}</Text>
+        <Text style={[s.soft, { marginTop: 2, marginBottom: result.ethPaid ? 4 : 18, textAlign: "center" }]}>to {shortAddr(result.to)}</Text>
+        {!!result.ethPaid && <Text style={[s.small, { marginBottom: 18, textAlign: "center" }]}>Paid {trimNum(result.ethPaid, 8)} ETH · swapped on Uniswap</Text>}
         <View style={{ alignSelf: "stretch" }}>
           {!!result.txHash && <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`${NET.explorer}/tx/${result.txHash}`)} />}
           <Button big title="Done" onPress={onBack} />
@@ -907,7 +976,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
         <Back title="Edit" onPress={() => setStage("form")} />
         <Text style={s.pageTitle}>Review</Text>
         <Text style={s.soft}>You're sending</Text>
-        <Text style={s.reviewAmt}>{usd(value)}</Text>
+        <Text style={s.reviewAmt}>{show(value)}</Text>
         <View style={[s.activity, { marginTop: 16 }]}>
           <View style={s.detailRow}><Text style={s.small}>To</Text>
             <Text selectable style={[s.bold, { maxWidth: "72%", textAlign: "right", fontWeight: "400" }]}>
@@ -915,6 +984,8 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
             </Text>
           </View>
           <View style={s.detailRow}><Text style={s.small}>Network</Text><Text style={s.bold}>{NET.name}</Text></View>
+          {!!quote && <View style={s.detailRow}><Text style={s.small}>You pay about</Text><Text style={s.bold}>{trimNum(quote.ethQuote, 8)} ETH</Text></View>}
+          {!!quote && <View style={s.detailRow}><Text style={s.small}>Swapped on</Text><Text style={s.bold}>Uniswap v3</Text></View>}
           <View style={s.detailRow}><Text style={s.small}>Approved by</Text><Text style={s.bold}>Card and fingerprint</Text></View>
         </View>
         {!known && (
@@ -947,10 +1018,16 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
         </>
       )}
 
-      <Text style={[s.small, { marginTop: 20 }]}>Amount (dollars)</Text>
+      {swapNet && (
+        <>
+          <Text style={[s.small, { marginTop: 20 }]}>Send</Text>
+          <Seg value={asset} onChange={(v) => { setAsset(v); setAmt(""); }} options={[["usdt", "USDT"], ["eth", "ETH"]]} />
+        </>
+      )}
+      <Text style={[s.small, { marginTop: 20 }]}>{eth ? "Amount (ETH)" : `Amount (${coin()})`}</Text>
       <Field value={amt} onChangeText={setAmt} placeholder="0.00" keyboardType="decimal-pad" />
       {!!amtErr && <Text style={s.fieldErr}>{amtErr}</Text>}
-      <Text style={[s.small, { marginTop: 6 }]}>{hidden ? "Available ••••" : `Available ${usd(w.balance)} · up to ${usd(Math.min(Number(w.perTxLimit), left))} per send today`}</Text>
+      <Text style={[s.small, { marginTop: 6 }]}>{hidden ? "Available ••••" : eth ? `Available ${trimNum(w.ethBalance, 6)} ETH · up to ${trimNum(Math.min(Number(w.ethPerTxLimit), left), 6)} ETH per send today` : payWith === "eth" ? `Paid from your ETH (${trimNum(w.ethBalance, 6)} ETH available)` : `Available ${usd(w.balance)} · up to ${usd(Math.min(Number(w.perTxLimit), left))} per send today`}</Text>
 
       <View style={{ marginTop: 14 }}><Button big title="Review" disabled={!ok} onPress={() => setStage("review")} /></View>
     </ScrollView>
@@ -979,7 +1056,7 @@ function useCountdown(expirySec) {
 }
 
 /** The approval sheet: what you are paying, who has already agreed, and how long it stays open. */
-function PaySheetBody({ pay, payBusy, approve, decline }) {
+function PaySheetBody({ pay, payBusy, approve, decline, steps }) {
   const { secs, label } = useCountdown(Number(pay.expiry) || 0);
   const sending = !!payBusy && payBusy !== "Waiting for fingerprint…";
   return (
@@ -987,7 +1064,16 @@ function PaySheetBody({ pay, payBusy, approve, decline }) {
       <Text style={s.soft}>Card tapped at</Text>
       <Text style={s.merchant}>{pay.merchantName}</Text>
       <View style={s.balanceRow}><Text style={s.sheetAmount}>{usd(pay.amount)}</Text></View>
-
+      {pay.swap && (
+        <View style={[x.quote, { flexDirection: "row", alignItems: "center" }]}>
+          <TokenIcon symbol="ETH" size={34} />
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={s.bold}>You pay about {trimNum(pay.swap.ethQuote, 8)} ETH</Text>
+            <Text style={s.small}>Swapped to USDT on Uniswap. At most {trimNum(pay.swap.ethMax, 8)} ETH, and the shop gets exactly {usd(pay.amount)}.</Text>
+          </View>
+        </View>
+      )}
+      {sending && steps && steps.length > 0 ? <SwapProgress steps={steps} compact /> : (
       <View style={s.agree}>
         <View style={s.agreeRow}>
           <View style={[s.agreeDot, { backgroundColor: C.yellow }]}><Icon name="check" size={16} color={C.ink} sw={2.6} /></View>
@@ -998,6 +1084,7 @@ function PaySheetBody({ pay, payBusy, approve, decline }) {
           <Text style={s.bold}>Fingerprint</Text><Text style={s.agreeState}>{sending ? "approved" : "approve now"}</Text>
         </View>
       </View>
+      )}
 
       {Number(pay.expiry) > 0 && (
         <View style={s.metaRow}>
@@ -1015,7 +1102,7 @@ function PaySheetBody({ pay, payBusy, approve, decline }) {
 /** Details of one activity row: what happened, when, how it was approved. */
 function DetailBody({ p, hidden, onClose }) {
   const m = rowMeta(p);
-  const amount = hidden ? MASK : (m.tone === "in" ? "+" : m.tone === "out" ? "−" : "") + usd(p.amount);
+  const amount = hidden ? MASK : (m.tone === "in" ? "+" : m.tone === "out" ? "−" : "") + fmtAmt(p.amount, p.symbol);
   const approved = p.kind === "received" ? "" : p.status !== "paid" ? "" : p.cardOnly ? "Card (small payment)" : "Card and fingerprint";
   const when = p.time ? new Date(p.time).toLocaleString("en-US", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "";
   const line = (k, v, addr) => !!v && (<View style={s.detailRow}><Text style={s.small}>{k}</Text><Text selectable={addr} style={[s.bold, { maxWidth: "62%", textAlign: "right" }, addr && s.addrVal]}>{v}</Text></View>);
@@ -1037,6 +1124,276 @@ function DetailBody({ p, hidden, onClose }) {
     </>
   );
 }
+
+// ------------------------------------------------------------------ Ethereum Sepolia: tokens, swap, progress, secret settings
+
+/** Polls a payment's progress steps while the (long) phone request is running. Returns a stop function. */
+function trackSteps(id, set) {
+  let on = true;
+  (async () => {
+    while (on) {
+      try { const p = await api(`/api/pay/${id}`); if (on && p.steps) set(p.steps); } catch { /* keep polling */ }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  })();
+  return () => { on = false; };
+}
+
+/** The big circle on a finished screen: a check, or the ETH logo when the payment was made with ETH. */
+function DoneMark({ eth }) {
+  return (
+    <View style={s.bigCheck}>
+      {eth ? <Svg width={40} height={40} viewBox="0 0 24 24"><Path d="M12 2L5 12.2l7 4.1 7-4.1zM12 17.6L5 13.5 12 22l7-8.5z" fill={C.ink} /></Svg> : <Icon name="check" size={44} color={C.ink} sw={2.6} />}
+    </View>
+  );
+}
+
+/** Two or three choices in a row (the selected one is yellow). */
+function Seg({ value, onChange, options }) {
+  return (
+    <View style={x.seg}>
+      {options.map(([v, label]) => (
+        <Pressable key={v} onPress={() => onChange(v)} style={[x.segBtn, value === v && { backgroundColor: C.yellow }]} accessibilityLabel={label}>
+          <Text style={[x.segTxt, value === v && { color: C.ink }]}>{label}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+const TOKEN_LOOK = { ETH: ["#DDE3FF", "◆"], USDT: ["#C8EBDD", "₮"], USDC: ["#CFE2FF", "$"], DAI: ["#FFE9A8", "◈"], UNI: ["#FFD0E6", "U"] };
+function TokenIcon({ symbol, size = 40 }) {
+  const [bg, glyph] = TOKEN_LOOK[symbol] || ["#EEE", symbol.slice(0, 1)];
+  return (
+    <View style={[x.tokIcon, { width: size, height: size, borderRadius: size / 2, backgroundColor: bg }]}>
+      {symbol === "ETH"
+        ? <Svg width={size * 0.5} height={size * 0.5} viewBox="0 0 24 24"><Path d="M12 2L5 12.2l7 4.1 7-4.1zM12 17.6L5 13.5 12 22l7-8.5z" fill={C.ink} /></Svg>
+        : <Text style={[x.tokGlyph, { fontSize: size * 0.45 }]}>{glyph}</Text>}
+    </View>
+  );
+}
+
+/** The wallet's tokens with their real balances. */
+function TokenList({ w, hidden, toggleHidden }) {
+  return (
+    <>
+      <View style={[x.tokHead, { marginTop: 26 }]}>
+        <Text style={s.eyebrow}>Your tokens</Text>
+      </View>
+      <View style={s.activity}>
+        {w.tokens.map((t, i) => (
+          <View key={t.symbol} style={[x.tokRow, i > 0 && s.actBorder]}>
+            <TokenIcon symbol={t.symbol} />
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={s.bold}>{t.symbol}</Text>
+              <Text style={s.small}>{t.name}</Text>
+            </View>
+            <Text style={s.bold}>{hidden ? MASK : t.symbol === "ETH" ? `${trimNum(t.balance, 6)} ETH` : fmtAmt(t.balance, t.symbol)}</Text>
+          </View>
+        ))}
+      </View>
+    </>
+  );
+}
+
+/** "Swapping on Uniswap": every tick is a real step the backend reports (card, fingerprint, price, swap, confirmed). */
+function SwapProgress({ steps, sub, compact }) {
+  const done = steps.filter((st) => st.state === "done").length;
+  const last = useRef(0);
+  useEffect(() => { if (done > last.current) cue("swap_step"); last.current = done; }, [done]);
+  return (
+    <View style={{ alignItems: "center", alignSelf: "stretch", paddingVertical: compact ? 6 : 0 }}>
+      {!compact && <Text style={s.h2}>Swapping on Uniswap</Text>}
+      {compact && <Text style={s.bold}>Swapping on Uniswap</Text>}
+      {!!sub && !compact && <Text style={[s.soft, s.mid]}>{sub}</Text>}
+      <Text style={x.via}>UNISWAP V3</Text>
+      <View style={x.progList}>
+        {steps.map((st) => (
+          <View key={st.id} style={x.progRow}>
+            {st.state === "done" ? <View style={[x.dot, { backgroundColor: C.greenInk, borderColor: C.greenInk }]}><Icon name="check" size={13} color="#fff" sw={3} /></View>
+              : st.state === "active" ? <View style={x.dot}><ActivityIndicator size="small" color={C.ink} /></View>
+              : <View style={[x.dot, { borderColor: C.line }]} />}
+            <Text style={[x.progTxt, st.state === "waiting" && { color: C.muted }, st.state === "active" && { fontWeight: "800" }]}>{st.label}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/** The Swap button: ETH to USDT only, into the same wallet, approved with card and fingerprint. */
+function SwapScreen({ w, wallet, onBack, refresh, say, hidden }) {
+  const [stage, setStage] = useState("form"); // form | tap | sign | sending | done
+  const [text, setText] = useState("");
+  const [quote, setQuote] = useState(null);
+  const [steps, setSteps] = useState([]);
+  const [result, setResult] = useState(null);
+  const value = /^\d+([.,]\d{0,2})?$/.test(text.trim()) ? Number(text.trim().replace(",", ".")) : NaN;
+  useEffect(() => {
+    setQuote(null);
+    if (!(value > 0)) return undefined;
+    let alive = true;
+    const t = setTimeout(() => { api(`/api/quote?amount=${value}`).then((q) => alive && setQuote(q)).catch(() => {}); }, 350);
+    return () => { alive = false; clearTimeout(t); };
+  }, [value]);
+  const err = !text.trim() ? "" : !(value > 0) ? "Enter an amount like 0.20."
+    : value > Number(w.perTxLimit) ? `Over your per-payment limit of ${usd(w.perTxLimit)}.`
+    : quote && Number(quote.ethMax) > Number(w.ethBalance) ? "You don't have enough ETH for that."
+    : "";
+  const ok = value > 0 && !err && !!quote;
+
+  async function go() {
+    try {
+      setStage("tap");
+      let st;
+      const card = await withCard(async (key) => {
+        st = await api("/api/swap/start", { cardModulus: key.modulus, amount: String(value) });
+        if (st.wallet.toLowerCase() !== wallet.toLowerCase() || st.to.toLowerCase() !== wallet.toLowerCase()) throw new Error("This card belongs to a different wallet.");
+        return st.challenge;
+      });
+      setStage("sign");
+      const phoneSig = await signWithPhone(st.hash, `Swap to ${usd(value)}`, `Pay about ${trimNum(st.swap.ethQuote, 8)} ETH`);
+      setStage("sending");
+      await api(`/api/pay/${st.id}/card`, { cardSig: card.signature });
+      const stop = trackSteps(st.id, setSteps);
+      let r;
+      try { r = await submitPhone(st.id, phoneSig); } finally { stop(); }
+      if (r.status !== "paid") throw new Error(r.error || "The swap failed.");
+      if (r.steps) setSteps(r.steps);
+      cue("paid");
+      setResult({ usdt: String(value), eth: r.swap?.ethPaid, txHash: r.txHash });
+      setStage("done");
+      refresh().catch(() => {});
+    } catch (e) {
+      const msg = explain(e);
+      if (msg) cue("declined");
+      say(msg, true);
+      setStage("form");
+    }
+  }
+
+  if (stage === "sending") {
+    return <View style={s.center}>{steps.length ? <SwapProgress steps={steps} sub={`${usd(value)} into your wallet`} /> : <ActivityIndicator size="large" color={C.ink} />}</View>;
+  }
+  if (stage === "tap" || stage === "sign") {
+    return (
+      <View style={s.center}>
+        <Steps at={stage === "tap" ? 1 : 2} labels={["Tap card", "Fingerprint", "Swap"]} />
+        {stage === "tap" ? <ScanArt /> : <ActivityIndicator size="large" color={C.ink} />}
+        <Text style={s.h2}>{stage === "tap" ? "Tap your card" : "Confirm it's you"}</Text>
+        <Text style={[s.lede, s.mid]}>{stage === "tap" ? `Hold your bank card to the back of the phone to swap ETH for ${usd(value)}.` : "Use your fingerprint when asked."}</Text>
+        {stage === "tap" && <Button kind="ghost" title="Cancel" onPress={() => { stopCard(); setStage("form"); }} />}
+      </View>
+    );
+  }
+  if (stage === "done" && result) {
+    return (
+      <View style={s.center}>
+        <DoneMark eth />
+        <Text style={s.paidTitle}>Swapped</Text>
+        <Text style={s.sheetAmount}>{hidden ? MASK : `+${usd(result.usdt)}`}</Text>
+        <Text style={[s.soft, { marginTop: 2, marginBottom: 18, textAlign: "center" }]}>{result.eth ? `for ${trimNum(result.eth, 8)} ETH, on Uniswap` : "on Uniswap"}</Text>
+        <View style={{ alignSelf: "stretch" }}>
+          {!!result.txHash && <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`${NET.explorer}/tx/${result.txHash}`)} />}
+          <Button big title="Done" onPress={onBack} />
+        </View>
+      </View>
+    );
+  }
+  return (
+    <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
+      <Back title="Home" onPress={onBack} />
+      <Text style={s.pageTitle}>Swap</Text>
+      <Text style={s.soft}>Turn some of your ETH into USDT, on Uniswap. Approve with card and fingerprint.</Text>
+      <View style={x.swapBox}>
+        <View style={x.swapSide}><TokenIcon symbol="ETH" /><Text style={[s.bold, { marginTop: 6 }]}>ETH</Text><Text style={s.small}>{hidden ? MASK : `${trimNum(w.ethBalance, 6)} available`}</Text></View>
+        <Icon name="swap" size={24} />
+        <View style={x.swapSide}><TokenIcon symbol="USDT" /><Text style={[s.bold, { marginTop: 6 }]}>USDT</Text><Text style={s.small}>{hidden ? MASK : `${usd(w.balance)} now`}</Text></View>
+      </View>
+      <Text style={[s.small, { marginTop: 20 }]}>You get (USDT)</Text>
+      <Field value={text} onChangeText={setText} placeholder="0.00" keyboardType="decimal-pad" />
+      {!!err && <Text style={s.fieldErr}>{err}</Text>}
+      {!!quote && !err && (
+        <View style={[x.quote, { flexDirection: "row", alignItems: "center" }]}>
+          <TokenIcon symbol="ETH" size={34} />
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={s.bold}>You pay about {trimNum(quote.ethQuote, 8)} ETH</Text>
+            <Text style={s.small}>At most {trimNum(quote.ethMax, 8)} ETH. Swapped on Uniswap v3.</Text>
+          </View>
+        </View>
+      )}
+      <View style={{ marginTop: 14 }}><Button big title="Tap card & swap" disabled={!ok} onPress={go} /></View>
+      {!!w.tokens && <TokenList w={w} hidden={hidden} />}
+    </ScrollView>
+  );
+}
+
+/** Shows what the card is doing right now ("Card detected. Don't move the card") over every screen. */
+function CardBanner() {
+  const [ph, setPh] = useState(getCardPhase());
+  useEffect(() => onCardPhase(setPh), []);
+  const m = { detected: ["Card detected. Don't move the card", C.yellow], almost: ["Reading… keep holding it still", C.yellow], done: ["Done. You can lift the card now", "#BFE8CF"], moved: ["The card moved. Hold it still and try again", "#FFC2D9"] }[ph];
+  if (!m) return null;
+  return <View pointerEvents="none" style={[x.banner, { backgroundColor: m[1] }]}><Text style={x.bannerTxt}>{m[0]}</Text></View>;
+}
+
+/** Secret settings (hold the app title, or the card on Home, for 2 seconds): the network and the sound. */
+function SecretSettings({ visible, onClose, onSwitch }) {
+  const [nets, setNets] = useState(null);
+  const [sound, setSound] = useState(soundOn());
+  useEffect(() => {
+    if (!visible) return;
+    setSound(soundOn());
+    if (FIXED_NET) return;
+    fetch(RELAYER + "/api/networks", { headers: { "ngrok-skip-browser-warning": "1" } }).then((r) => r.json()).then((j) => setNets(j.networks || [])).catch(() => setNets([]));
+  }, [visible]);
+  const current = NETID || nets?.find((n) => n.default)?.id;
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <Text style={s.sheetTitle}>Settings</Text>
+      <Text style={[s.eyebrow, { marginBottom: 8 }]}>Network</Text>
+      {FIXED_NET ? <Text style={[s.soft, { marginBottom: 12 }]}>This app is set to {NET.name}.</Text>
+        : nets === null ? <ActivityIndicator color={C.ink} style={{ marginVertical: 12 }} />
+        : !nets.length ? <Text style={[s.soft, { marginBottom: 12 }]}>This backend has one network: {NET.name}.</Text>
+        : (
+          <View style={s.activity}>
+            {nets.map((n, i) => (
+              <Pressable key={n.id} style={[x.netRow, i > 0 && s.actBorder]} disabled={n.id === current || n.online === false} onPress={() => onSwitch(n.id)}>
+                <View style={{ flex: 1 }}><Text style={s.bold}>{n.name}</Text><Text style={s.small}>{n.online === false ? "offline" : n.id === current ? "In use" : "Tap to switch"}</Text></View>
+                {n.id === current && <Icon name="check" size={20} color={C.greenInk} sw={3} />}
+              </Pressable>
+            ))}
+          </View>
+        )}
+      <View style={[x.netRow, { marginTop: 14 }]}>
+        <View style={{ flex: 1 }}><Text style={s.bold}>Sound</Text><Text style={s.small}>Card tap sounds</Text></View>
+        <Switch value={sound} onValueChange={(v) => { setSound(v); setSoundOn(v); if (v) cue("tap"); }} trackColor={{ true: C.ink }} thumbColor={sound ? C.yellow : "#f4f3f4"} />
+      </View>
+      <Button kind="ghost" title="Close" onPress={onClose} />
+    </Sheet>
+  );
+}
+
+const x = StyleSheet.create({
+  seg: { flexDirection: "row", marginTop: 6, ...box, borderRadius: R, overflow: "hidden", backgroundColor: C.surface },
+  segBtn: { flex: 1, paddingVertical: 11, alignItems: "center", borderRightWidth: 1, borderRightColor: C.line },
+  segTxt: { fontWeight: "800", fontSize: 14, color: C.soft },
+  tokHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  tokRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, paddingHorizontal: 14 },
+  tokIcon: { alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: C.ink },
+  tokGlyph: { fontWeight: "900", color: C.ink },
+  quote: { marginTop: 12, padding: 12, backgroundColor: "#FFF9C2", ...box, borderRadius: R },
+  swapBox: { flexDirection: "row", alignItems: "center", justifyContent: "space-around", marginTop: 18, paddingVertical: 16, backgroundColor: C.surface, ...box, borderRadius: R, ...hard(3) },
+  swapSide: { alignItems: "center" },
+  via: { fontFamily: "monospace", fontSize: 11, fontWeight: "700", color: C.soft, letterSpacing: 1.2, marginTop: 4 },
+  progList: { alignSelf: "stretch", marginTop: 14, paddingHorizontal: 18 },
+  progRow: { flexDirection: "row", alignItems: "center", paddingVertical: 7 },
+  progTxt: { flex: 1, marginLeft: 12, fontSize: 15, fontWeight: "700", color: C.ink },
+  dot: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: C.ink, alignItems: "center", justifyContent: "center" },
+  banner: { position: "absolute", top: 40, left: 16, right: 16, paddingVertical: 12, paddingHorizontal: 14, ...box, borderRadius: R, ...hard(3), zIndex: 50, elevation: 12 },
+  bannerTxt: { fontWeight: "800", fontSize: 15, color: C.ink, textAlign: "center" },
+  netRow: { flexDirection: "row", alignItems: "center", paddingVertical: 13, paddingHorizontal: 14 },
+});
 
 // ------------------------------------------------------------------ main (tabs + shared payment/freeze flows)
 
@@ -1069,6 +1426,7 @@ function Main({ wallet, onForget }) {
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState(null);
   const [paid, setPaid] = useState(null); // { amount, merchantName } after a successful approval
+  const [steps, setSteps] = useState(null); // progress of an ETH payment while it is processed
   const [detail, setDetail] = useState(null); // an activity item opened for details
   const [failures, setFailures] = useState(0); // consecutive failed refreshes (shown quietly, never as an error banner)
   const [updatedAt, setUpdatedAt] = useState(null);
@@ -1123,10 +1481,13 @@ function Main({ wallet, onForget }) {
     try {
       const phoneSig = await signWithPhone(pay.hash, `Pay ${usd(pay.amount)}`, `to ${pay.merchantName}`);
       setPayBusy("Sending payment…");
-      const r = await api(`/api/pay/${pay.id}/phone`, { phoneSig });
+      const stop = pay.mode === "swap" ? trackSteps(pay.id, setSteps) : () => {};
+      let r;
+      try { r = await submitPhone(pay.id, phoneSig); } finally { stop(); }
       if (r.status !== "paid") throw new Error(r.error || "Payment failed");
-      Vibration.vibrate([0, 40, 60, 40]);
-      setPaid({ amount: r.amount, merchantName: r.merchantName });
+      if (r.steps) setSteps(r.steps);
+      cue("paid");
+      setPaid({ amount: r.amount, merchantName: r.merchantName, ethPaid: r.swap?.ethPaid });
     } catch (e) {
       if (/cancel/i.test(String(e.message))) { setPayBusy(""); return; }
       say(explain(e), true);
@@ -1134,6 +1495,7 @@ function Main({ wallet, onForget }) {
     seen.current.add(pay.id);
     setPay(null);
     setPayBusy("");
+    setSteps(null);
     refresh().catch(() => {});
   }
   async function decline() {
@@ -1225,8 +1587,9 @@ function Main({ wallet, onForget }) {
         : sub === "small" && w ? <SmallScreen w={w} onBack={back} secure={secure} />
         : sub === "add" ? <AddCardScreen wallet={wallet} onBack={back} refresh={refresh} say={say} />
         : sub === "send" && w ? <SendScreen w={w} wallet={wallet} onBack={back} refresh={refresh} say={say} hidden={hidden} />
+        : sub === "swap" && w ? <SwapScreen w={w} wallet={wallet} onBack={back} refresh={refresh} say={say} hidden={hidden} />
         : sub === "receive" ? <ReceiveScreen wallet={wallet} onBack={back} onCopy={copyAddress} />
-        : tab === "home" ? <HomeTab w={w} wallet={wallet} hidden={hidden} toggleHidden={toggleHidden} goActivity={() => setTab("activity")} onCopy={copyAddress} onOpen={setDetail} onSend={() => goSub("send")} onReceive={() => goSub("receive")} refreshControl={refreshControl} />
+        : tab === "home" ? <HomeTab w={w} wallet={wallet} hidden={hidden} toggleHidden={toggleHidden} goActivity={() => setTab("activity")} onCopy={copyAddress} onOpen={setDetail} onSend={() => goSub("send")} onSwap={() => goSub("swap")} onReceive={() => goSub("receive")} refreshControl={refreshControl} />
         : tab === "activity" ? <ActivityTab w={w} hidden={hidden} toggleHidden={toggleHidden} onOpen={setDetail} refreshControl={refreshControl} />
         : <CardsTab w={w} openSub={goSub} setFreezeOpen={setFreezeOpen} setUnfreezeOpen={setUnfreezeOpen} onForget={onForget} refreshControl={refreshControl} />}
 
@@ -1236,16 +1599,17 @@ function Main({ wallet, onForget }) {
       {/* Closing the sheet (back button, tapping outside, or the fingerprint dialog taking focus)
           must never decline the payment: only the Decline button does. Amounts here are never hidden. */}
       <Sheet visible={!!pay} onClose={() => {}}>
-        {pay && <PaySheetBody pay={pay} payBusy={payBusy} approve={approve} decline={decline} />}
+        {pay && <PaySheetBody pay={pay} payBusy={payBusy} approve={approve} decline={decline} steps={steps} />}
       </Sheet>
 
       <Sheet visible={!!paid} onClose={() => setPaid(null)}>
         {paid && (
           <View style={{ alignItems: "center", paddingTop: 6 }}>
-            <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View>
+            <DoneMark eth={!!paid.ethPaid} />
             <Text style={s.paidTitle}>Paid</Text>
             <Text style={s.sheetAmount}>{usd(paid.amount)}</Text>
-            <Text style={[s.soft, { marginTop: 2, marginBottom: 18 }]}>to {paid.merchantName}</Text>
+            <Text style={[s.soft, { marginTop: 2, marginBottom: paid.ethPaid ? 4 : 18 }]}>to {paid.merchantName}</Text>
+            {!!paid.ethPaid && <Text style={[s.small, { marginBottom: 18 }]}>Paid {trimNum(paid.ethPaid, 8)} ETH · swapped on Uniswap</Text>}
             <View style={{ alignSelf: "stretch" }}><Button big title="Done" onPress={() => setPaid(null)} /></View>
           </View>
         )}
@@ -1288,27 +1652,55 @@ export default function App() {
   const [wallet, setWallet] = useState(undefined);
   const [recovery, setRecovery] = useState(null); // { wallet } while a phone replacement is waiting
   const [mode, setMode] = useState("welcome"); // welcome | recover
+  const [netVer, setNetVer] = useState(0);
+  const [secretOpen, setSecretOpen] = useState(false);
+  openSecret = () => setSecretOpen(true);
+
+  const load = useCallback(async () => {
+    const w = await AsyncStorage.getItem(wkey());
+    const rj = await AsyncStorage.getItem(rkey());
+    const rv = rj ? JSON.parse(rj) : null;
+    setRecovery(rv);
+    setMode(!w && rv ? "recover" : "welcome");
+    setWallet(w || null);
+  }, []);
   useEffect(() => {
     (async () => {
-      const w = await AsyncStorage.getItem("wallet");
-      const rj = await AsyncStorage.getItem("recovery");
-      const rv = rj ? JSON.parse(rj) : null;
-      setRecovery(rv);
-      if (!w && rv) setMode("recover");
-      setWallet(w || null);
+      NETID = FIXED_NET || (await AsyncStorage.getItem("network")) || null;
+      await load();
     })();
-  }, []);
+  }, [load]);
+
+  const switchNet = async (id) => {
+    setSecretOpen(false);
+    await AsyncStorage.setItem("network", id);
+    NETID = id;
+    NET = { name: id === "sepolia" ? "Ethereum Sepolia" : "Whitechain testnet", explorer: id === "sepolia" ? "https://sepolia.etherscan.io" : "https://explorer.testnet.whitechain.io" };
+    setWallet(undefined);
+    setNetVer((v) => v + 1); // every screen starts fresh on the other network and its wallet
+    await load();
+  };
   const forget = () =>
     Alert.alert("Remove wallet from this phone?", "This deletes the phone's key. Without it, the funds can't be spent from this phone.", [
       { text: "Cancel", style: "cancel" },
-      { text: "Remove", style: "destructive", onPress: async () => { await AsyncStorage.removeItem("wallet"); try { forgetPhoneKey(); } catch {} setWallet(null); setMode("welcome"); } },
+      { text: "Remove", style: "destructive", onPress: async () => {
+        await AsyncStorage.removeItem(wkey());
+        // The phone key is shared by the wallets on every network: only delete it when no other network still has a wallet.
+        const others = await Promise.all(["wallet", "wallet:sepolia"].filter((k) => k !== wkey()).map((k) => AsyncStorage.getItem(k)));
+        if (!others.some(Boolean)) { try { forgetPhoneKey(); } catch {} }
+        setWallet(null); setMode("welcome");
+      } },
     ]);
   return (
     <View style={s.root}>
       <StatusBar style="dark" backgroundColor={C.paper} />
-      {wallet === undefined ? null : wallet ? <Main wallet={wallet} onForget={forget} />
-        : mode === "recover" ? <RecoverScreen resume={recovery} onDone={(w) => { setRecovery(null); setMode("welcome"); setWallet(w); }} onBack={() => { setRecovery(null); setMode("welcome"); }} />
-        : <Welcome onDone={setWallet} onRecover={() => setMode("recover")} />}
+      <View style={{ flex: 1 }} key={netVer}>
+        {wallet === undefined ? null : wallet ? <Main wallet={wallet} onForget={forget} />
+          : mode === "recover" ? <RecoverScreen resume={recovery} onDone={(w) => { setRecovery(null); setMode("welcome"); setWallet(w); }} onBack={() => { setRecovery(null); setMode("welcome"); }} />
+          : <Welcome onDone={setWallet} onRecover={() => setMode("recover")} />}
+      </View>
+      <CardBanner />
+      <SecretSettings visible={secretOpen} onClose={() => setSecretOpen(false)} onSwitch={switchNet} />
     </View>
   );
 }

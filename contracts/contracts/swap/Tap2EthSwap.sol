@@ -30,9 +30,22 @@ contract Tap2EthWalletSwap is Tap2EthWalletV2 {
     address public immutable weth;
     address public immutable stable; // the token merchants are paid in (USDT)
 
+    // ETH has its own limits: the v2 limits are in USDT units (6 decimals), ETH has 18.
+    uint256 public constant DEFAULT_ETH_PER_TX = 0.05 ether;
+    uint256 public constant DEFAULT_ETH_DAILY = 0.1 ether;
+    bool public ethLimitsSet; // false = the defaults above apply
+    uint256 private _ethPerTx;
+    uint256 private _ethDaily;
+    uint256 public ethSpentToday;
+    uint256 public ethSpentDay;
+
     event PaidWithSwap(address indexed merchant, uint256 stableOut, uint256 ethIn, uint24 fee, uint256 nonce);
+    event EthReceived(address indexed from, uint256 amount);
+    event EthSent(address indexed to, uint256 amount, uint256 nonce);
+    event EthLimitsChanged(uint256 perTx, uint256 daily);
 
     error SwapFailed();
+    error EthSendFailed();
 
     constructor(address _router, address _weth, address _stable) {
         router = ISwapRouter02(_router);
@@ -40,8 +53,56 @@ contract Tap2EthWalletSwap is Tap2EthWalletV2 {
         stable = _stable;
     }
 
-    /// @notice The wallet can hold ETH. Only `payWithSwap` spends it.
-    receive() external payable {}
+    /// @notice The wallet can hold ETH. Only `payWithSwap` and `sendEth` spend it, both with card + phone approval.
+    receive() external payable {
+        emit EthReceived(msg.sender, msg.value);
+    }
+
+    // ------------------------------------------------------------- sending ETH
+
+    function ethPerTxLimit() public view returns (uint256) {
+        return ethLimitsSet ? _ethPerTx : DEFAULT_ETH_PER_TX;
+    }
+
+    function ethDailyLimit() public view returns (uint256) {
+        return ethLimitsSet ? _ethDaily : DEFAULT_ETH_DAILY;
+    }
+
+    function sendEthHash(address to, uint256 amount, uint256 _nonce, uint256 expiry) public view returns (bytes32) {
+        return keccak256(abi.encode("TAP2ETH_V2_SEND_ETH", block.chainid, address(this), to, amount, _nonce, expiry));
+    }
+
+    /// @notice Send `amount` of the wallet's ETH to `to`. Needs `threshold` signatures including a phone (no card-only
+    ///         shortcut for ETH) and respects the ETH limits.
+    function sendEth(address to, uint256 amount, uint256 expiry, Sig[] calldata sigs) external {
+        if (block.timestamp > expiry) revert Expired();
+        if (frozen) revert IsFrozen();
+        _approve(sendEthHash(to, amount, nonce, expiry), sigs, threshold, true);
+
+        uint256 today = block.timestamp / 1 days;
+        if (today != ethSpentDay) {
+            ethSpentDay = today;
+            ethSpentToday = 0;
+        }
+        if (amount > ethPerTxLimit() || ethSpentToday + amount > ethDailyLimit()) revert OverLimit();
+        ethSpentToday += amount;
+        uint256 used = nonce++;
+
+        (bool ok,) = to.call{value: amount}("");
+        if (!ok) revert EthSendFailed();
+        emit EthSent(to, amount, used);
+    }
+
+    /// @notice Change the ETH limits. Needs the full threshold of signatures, like every wallet change.
+    function setEthLimits(uint256 perTx, uint256 daily, uint256 expiry, Sig[] calldata sigs) external {
+        if (block.timestamp > expiry) revert Expired();
+        _approve(actionHash("ethLimits", abi.encode(perTx, daily), expiry), sigs, threshold, true);
+        nonce++;
+        ethLimitsSet = true;
+        _ethPerTx = perTx;
+        _ethDaily = daily;
+        emit EthLimitsChanged(perTx, daily);
+    }
 
     /// @notice The hash the signers approve. It binds the merchant, the exact stablecoin amount, the most ETH the
     ///         wallet may spend and the pool fee, so a relayer cannot change any of them.

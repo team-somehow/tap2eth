@@ -25,7 +25,13 @@ const NETWORKS = {
   arc: { chainId: 5042002, name: "Arc testnet", rpc: "https://rpc.testnet.arc.network", rpcBackups: ["https://rpc.testnet.arc.io"], explorer: "https://explorer.testnet.arc.io", symbol: "USDC", keyEnv: "ARC_RELAYER_KEY", tokenEnv: "ARC_TOKEN_ADDRESS", token: "0x3600000000000000000000000000000000000000", gasPrice: "200", batch: 10 },
   // Swap mode: wallets hold ETH, and a payment swaps it to exactly the USDT amount with the merchant as the swap recipient.
   sepolia: { chainId: 11155111, name: "Ethereum Sepolia", rpc: "https://ethereum-sepolia-rpc.publicnode.com", rpcBackups: ["https://sepolia.drpc.org"], explorer: "https://sepolia.etherscan.io", symbol: "USDT", keyEnv: "RELAYER_KEY", tokenEnv: "SEPOLIA_TOKEN_ADDRESS", token: "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0", gasPrice: "50", batch: 1,
-    swap: { dex: "Uniswap v3", router: "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E", quoter: "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3", weth: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", fees: [500, 3000, 10000], slippageBps: 100n } },
+    swap: { dex: "Uniswap v3", router: "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E", quoter: "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3", weth: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", fees: [500, 3000, 10000], slippageBps: 100n,
+      // Tokens listed in the wallet (real balances read from the chain). USDT is the payment token; the others are Sepolia test tokens.
+      tokens: [
+        { symbol: "USDC", name: "USD Coin", address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", decimals: 6 },
+        { symbol: "DAI", name: "Dai", address: "0xB4F1737Af37711e9A5890D9510c9bB60e170CB0D", decimals: 18 },
+        { symbol: "UNI", name: "Uniswap", address: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984", decimals: 18 },
+      ] } },
 };
 const NETWORK = (process.env.NETWORK || "").toLowerCase();
 if (NETWORK && !NETWORKS[NETWORK]) { console.error(`NETWORK must be "whitechain", "arc" or "sepolia", not "${NETWORK}".`); process.exit(1); }
@@ -34,7 +40,7 @@ const RPC = NETWORK ? (process.env[`${NETWORK.toUpperCase()}_RPC_URL`] || NET.rp
 const NET_KEY = process.env[NET.keyEnv] || (NETWORK ? "" : process.env.RELAYER_KEY);
 const NET_TOKEN = process.env[NET.tokenEnv] || NET.token || (NETWORK ? "" : process.env.TOKEN_ADDRESS);
 // POWERED_BY=off hides the "Powered by <chain>" badge in the app and on the terminal; anything else shows it.
-const POWERED_BY = NETWORK && !/^(off|none|no|false|0)$/i.test(process.env.POWERED_BY || "on") ? { arc: "Arc", whitechain: "Whitechain", sepolia: "Ethereum Sepolia" }[NETWORK] : "";
+const POWERED_BY = NETWORK && !/^(off|none|no|false|0)$/i.test(process.env.POWERED_BY || "on") ? { arc: "Arc", whitechain: "Whitechain" }[NETWORK] : "";
 const SWAP = NET.swap || null; // set on networks where payments are ETH -> USDT swaps
 const NET_INFO = { network: NETWORK || "local", name: NET.name, explorer: NET.explorer, symbol: NET.symbol, poweredBy: POWERED_BY, ...(SWAP ? { swap: { dex: SWAP.dex, ethSymbol: "ETH" } } : {}) };
 const IS_LOCAL = /127\.0\.0\.1|localhost/.test(RPC);
@@ -71,6 +77,7 @@ class FailoverProvider extends ethers.JsonRpcProvider {
     const known = NET.chainId ? ethers.Network.from(NET.chainId) : undefined;
     const opts = { batchMaxCount: NET.batch || 1, ...(known ? { staticNetwork: known } : {}) };
     super(urls[0], known, opts);
+    this.pollingInterval = 1500; // look for a transaction's receipt every 1.5 s instead of every 4 s
     this.backups = urls.slice(1).map((u) => new ethers.JsonRpcProvider(u, known, opts));
   }
   async send(method, params) {
@@ -109,17 +116,27 @@ const units = (x) => ethers.parseUnits(String(x), decimals);
 
 // --- Uniswap v3 quote (swap mode): the ETH needed for EXACTLY `out` USDT. Tries every fee tier, takes the cheapest.
 const quoterIface = SWAP && new ethers.Interface(["function quoteExactOutputSingle((address tokenIn,address tokenOut,uint256 amount,uint24 fee,uint160 sqrtPriceLimitX96)) returns (uint256 amountIn, uint160, uint32, uint256)"]);
+// A public RPC can answer from a node a block behind, so a wallet's counter (nonce) read right after one of our own
+// transactions can still be the old number, and the new payment would be signed against it. We remember the next
+// counter ourselves and never use a smaller one.
+const nonceFloor = new Map(); // wallet -> next nonce, after the payments we sent
+const quoteCache = new Map(); // out amount -> { at, value }: the app asks while the person types, the tap reuses it
 async function quoteSwap(out) {
-  let best;
-  for (const fee of SWAP.fees) {
+  const hit = quoteCache.get(String(out));
+  if (hit && Date.now() - hit.at < 20_000) return hit.value;
+  // All fee tiers at once (one round trip instead of three), then the cheapest for the payer.
+  const tiers = await Promise.all(SWAP.fees.map(async (fee) => {
     try {
       const raw = await provider.call({ to: SWAP.quoter, data: quoterIface.encodeFunctionData("quoteExactOutputSingle", [{ tokenIn: SWAP.weth, tokenOut: tokenAddr, amount: out, fee, sqrtPriceLimitX96: 0 }]) });
-      const amountIn = quoterIface.decodeFunctionResult("quoteExactOutputSingle", raw)[0];
-      if (!best || amountIn < best.quote) best = { fee, quote: amountIn };
-    } catch { /* no pool at this fee tier, or not enough liquidity */ }
-  }
+      return { fee, quote: quoterIface.decodeFunctionResult("quoteExactOutputSingle", raw)[0] };
+    } catch { return null; /* no pool at this fee tier, or not enough liquidity */ }
+  }));
+  const best = tiers.filter(Boolean).reduce((a, t) => (!a || t.quote < a.quote ? t : a), null);
   if (!best) throw httpError(400, "No Uniswap pool can swap that amount right now.");
-  return { fee: best.fee, quote: best.quote, max: best.quote + (best.quote * SWAP.slippageBps) / 10000n };
+  const value = { fee: best.fee, quote: best.quote, max: best.quote + (best.quote * SWAP.slippageBps) / 10000n };
+  quoteCache.set(String(out), { at: Date.now(), value });
+  if (quoteCache.size > 50) quoteCache.delete(quoteCache.keys().next().value);
+  return value;
 }
 const swapInfo = (q) => ({ dex: SWAP.dex, fee: q.fee, ethQuote: ethers.formatEther(q.quote), ethMax: ethers.formatEther(q.max), slippagePct: Number(SWAP.slippageBps) / 100 });
 
@@ -193,10 +210,11 @@ const limit = (name, max, windowMs) => (req, res, next) => {
 function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
 
 /** Simulate first (a failure costs no gas), then send and account for the gas. */
-async function send(contract, method, args) {
+async function send(contract, method, args, hooks = {}) {
   gasGuard();
-  await priceGuard();
-  await contract[method].staticCall(...args); // throws the contract's error without spending gas
+  // The simulation (a failure costs no gas) and the gas price check run together. `hooks.simulated` means the caller
+  // already simulated these exact arguments a moment ago, so the second simulation is skipped.
+  await Promise.all([priceGuard(), hooks.simulated ? null : contract[method].staticCall(...args)]);
   let tx;
   try { tx = await contract[method](...args); } catch (e) {
     // Something else used this account's nonce (another tool, a manual transfer): re-read it once and retry.
@@ -204,9 +222,11 @@ async function send(contract, method, args) {
     relayer.reset();
     tx = await contract[method](...args);
   }
+  hooks.onSent?.(tx.hash); // the transaction exists on the network now (before it is mined)
   const rc = await tx.wait();
   gas.spent += rc.fee ?? 0n;
   chainViews.clear(); // balances and settings changed
+  signerCache.clear();
   return rc;
 }
 
@@ -222,6 +242,15 @@ function decodeError(e) {
 
 // ------------------------------------------------------------------ wallet helpers
 
+const signerCache = new Map(); // wallet -> { at, list }; cleared after every transaction we send
+async function signersCached(w) {
+  const k = await w.getAddress();
+  const hit = signerCache.get(k);
+  if (hit && Date.now() - hit.at < 30_000) return hit.list;
+  const list = await signersOf(w);
+  signerCache.set(k, { at: Date.now(), list });
+  return list;
+}
 async function signersOf(w) {
   const n = Number(await w.signerCount());
   const out = await Promise.all(Array.from({ length: n }, async (_, id) => {
@@ -313,29 +342,83 @@ app.post("/api/signup/:id", limit("signup-finish", SIGNUP_LIMIT, 3600_000), wrap
 
 const payments = new Map();
 
+// The progress list the apps draw while a payment is processed. Every tick is a real event (signature received,
+// transaction sent, receipt confirmed), never a timer. A step is "done", "active" (the first one not done) or "waiting".
+const stepPlan = (p) => p.mode === "swap"
+  ? [["card", "Card checked"], ["phone", "Fingerprint approved"], ["quote", "Best price found on Uniswap"], ["swap", "Swapping ETH to USDT on Uniswap"], ["confirm", `Confirmed on ${NET.name}`],
+     ["receive", p.kind === "swap" ? "USDT added to your wallet" : `${p.kind === "send" ? "Recipient" : "Merchant"} received ${p.amount} USDT`]]
+  : [["card", "Card checked"], ["phone", "Fingerprint approved"], ["confirm", `Confirmed on ${NET.name}`]];
+const stepsOf = (p) => {
+  const done = new Set(p.done || []);
+  let activeGiven = false;
+  return stepPlan(p).map(([id, label]) => {
+    if (done.has(id)) return { id, label, state: "done" };
+    if (!activeGiven && p.status !== "failed" && p.status !== "rejected") { activeGiven = true; return { id, label, state: "active" }; }
+    return { id, label, state: "waiting" };
+  });
+};
+const mark = (p, ...ids) => { p.done = [...new Set([...(p.done || []), ...ids])]; };
+async function ethSpentToday(w) {
+  const [spent, day, now] = await Promise.all([w.ethSpentToday(), w.ethSpentDay(), chainNow()]);
+  return day === BigInt(Math.floor(now / 86400)) ? spent : 0n;
+}
+
 // Opens a payment request for a wallet. Used by the terminal (pays the merchant) and by the app's Send (pays any address).
-async function openPayment({ cardModulus, amount, to, kind }) {
-  const wallet = await factory.walletOf(ethers.keccak256(hex(cardModulus)));
+async function openPayment({ cardModulus, amount, to, kind, asset = "usdt", payWith }) {
+  const cardKey = ethers.keccak256(hex(cardModulus));
+  let wallet = walletByCard.get(cardKey) || (await factory.walletOf(cardKey));
   if (wallet === ethers.ZeroAddress) throw httpError(404, "card not registered");
+  walletByCard.set(cardKey, wallet); // a card's wallet never changes
   const w = walletAt(wallet);
-  const [frozen, threshold, softLimit, softCardOnly, perTx, daily, list, balance] = await Promise.all([w.frozen(), w.threshold(), w.softLimit(), w.softCardOnly(), w.perTxLimit(), w.dailyLimit(), signersOf(w), SWAP ? provider.getBalance(wallet) : token.balanceOf(wallet)]);
-  const value = units(amount);
+  // How this payment is paid for: "pay" = USDT from the wallet, "swap" = ETH swapped to USDT on Uniswap (the merchant or
+  // recipient still gets exactly the USDT amount), "eth" = a plain ETH transfer. In the shop the wallet's saved preference
+  // decides; in the app the person picks. There is no automatic fallback.
+  let mode = "pay";
+  if (SWAP) {
+    if (kind === "swap") mode = "swap";
+    else if (asset === "eth") mode = "eth";
+    else if (kind !== "payment" && payWith === "eth") mode = "swap";
+  }
+  if (kind === "swap") to = wallet; // swap button: the USDT lands back in the person's own wallet
+  const value = ethers.parseUnits(String(amount), mode === "eth" ? 18 : decimals);
   if (value <= 0n) throw httpError(400, "Enter an amount above 0.");
+  // Everything this payment needs, read in ONE round of parallel requests: the card is held on the phone while we answer,
+  // so this call has to be quick. (The Uniswap price is only asked for when a swap is possible.)
+  const mayQuote = SWAP && (mode === "swap" || (kind === "payment" && mode === "pay"));
+  const [frozen, threshold, softLimit, softCardOnly, list, ethBal, usdtBal, nonce, now, usdtLimits, ethLimits, usdtSpent, ethSpent, quoted] = await Promise.all([
+    w.frozen(), w.threshold(), w.softLimit(), w.softCardOnly(), signersCached(w), SWAP ? provider.getBalance(wallet) : 0n, token.balanceOf(wallet), w.nonce(), chainNow(),
+    Promise.all([w.perTxLimit(), w.dailyLimit()]), SWAP ? Promise.all([w.ethPerTxLimit(), w.ethDailyLimit()]) : null,
+    spentToday(w), SWAP ? ethSpentToday(w) : 0n,
+    mayQuote ? quoteSwap(value).catch((e) => (mode === "swap" ? Promise.reject(e) : null)) : null,
+  ]);
+  // A shop payment asks for USDT: pay it from the wallet's USDT if there is enough, otherwise swap the wallet's ETH on Uniswap.
+  if (SWAP && kind === "payment" && mode === "pay" && usdtBal < value) mode = "swap";
   if (frozen) throw httpError(400, "IsFrozen");
-  if (value > perTx || (await spentToday(w)) + value > daily) throw httpError(400, "OverLimit");
-  const q = SWAP ? await quoteSwap(value) : null; // swap mode: what the customer will pay, in ETH
-  if (SWAP ? balance < q.max : balance < value) throw httpError(400, "InsufficientBalance"); // fail now, not after the phone approves
-  const soft = softLimit > 0n && value <= softLimit;
+  // Limits: USDT limits for pay and swap (they count the USDT amount), the separate ETH limits for a plain ETH send.
+  if (mode === "eth") {
+    if (value > ethLimits[0] || ethSpent + value > ethLimits[1]) throw httpError(400, "OverLimit");
+    if (ethBal < value) throw httpError(400, "InsufficientEth");
+  } else if (value > usdtLimits[0] || usdtSpent + value > usdtLimits[1]) throw httpError(400, "OverLimit");
+  const q = mode === "swap" ? quoted : null; // what the customer will pay, in ETH
+  if (mode === "swap" && !q) throw httpError(400, "No Uniswap pool can swap that amount right now.");
+  if (mode === "swap" && ethBal < q.max) throw httpError(400, kind === "payment" ? "InsufficientBalance" : "InsufficientEth"); // fail now, not after the phone approves
+  if (mode === "pay" && usdtBal < value) throw httpError(400, "InsufficientBalance");
+  const soft = mode !== "eth" && softLimit > 0n && value <= softLimit;
   if (!soft && threshold > 2n) throw httpError(400, `This wallet needs ${threshold} signatures; the terminal supports 2 for now.`);
   const cardId = cardIdOf(list, cardModulus);
   if (cardId === undefined) throw httpError(404, "card not registered");
-  const expiry = (await chainNow()) + TTL;
-  const nonce = await w.nonce();
-  const hash = SWAP ? await w.swapPaymentHash(to, value, q.max, q.fee, nonce, expiry) : await w.paymentHash(tokenAddr, to, value, nonce, expiry);
+  const expiry = now + TTL;
+  // Sepolia: the hash is built here (the same layout as the contract's own hash functions) instead of asking the chain for it.
+  const chainId = BigInt(chainKey);
+  const nonceNow = (nonceFloor.get(wallet) ?? 0n) > nonce ? nonceFloor.get(wallet) : nonce;
+  const hash = !SWAP ? await w.paymentHash(tokenAddr, to, value, nonceNow, expiry) : mode === "swap" ? ethers.keccak256(coder.encode(["string", "uint256", "address", "address", "address", "uint256", "uint256", "uint24", "uint256", "uint256"], ["TAP2ETH_V2_SWAP_PAY", chainId, wallet, tokenAddr, to, value, q.max, q.fee, nonceNow, BigInt(expiry)]))
+    : mode === "eth" ? ethers.keccak256(coder.encode(["string", "uint256", "address", "address", "uint256", "uint256", "uint256"], ["TAP2ETH_V2_SEND_ETH", chainId, wallet, to, value, nonceNow, BigInt(expiry)]))
+    : ethers.keccak256(coder.encode(["string", "uint256", "address", "address", "address", "uint256", "uint256", "uint256"], [PAY_TAG, chainId, wallet, tokenAddr, to, value, nonceNow, BigInt(expiry)])); // Whitechain keeps asking its own contract (first branch)
   const id = crypto.randomUUID();
-  // A send is always approved with the phone on the same device, so it never uses the card-only shortcut.
-  const cardOnly = kind !== "send" && soft && softCardOnly;
-  const p = { id, kind, wallet, to, amount: String(amount), value, expiry, hash, cardId, cardOnly, status: "waiting_for_card_sig", created: Date.now(), ...(q ? { swap: q } : {}) };
+  // A send or swap is always approved with the phone on the same device, so it never uses the card-only shortcut.
+  const cardOnly = kind === "payment" && soft && softCardOnly;
+  const p = { id, kind, mode, nonce: nonceNow, symbol: mode === "eth" ? "ETH" : NET.symbol, wallet, to, amount: String(amount), value, expiry, hash, cardId, cardOnly, status: "waiting_for_card_sig", created: Date.now(), ...(q ? { swap: q } : {}) };
+  if (q) mark(p, "quote");
   payments.set(id, p);
   return p;
 }
@@ -394,33 +477,69 @@ app.post("/api/pay/tapped", limit("pay-start", 120, 60_000), wrap(async (req, re
   res.json({ ...publicPayment(p), id: p.id });
 }));
 
-// App "Send": the owner pays any address. The same phone taps the card and signs, so the app also gets the hash.
+// App "Send": the owner sends USDT or (on Sepolia) ETH to any address. `asset` is what is sent; `payWith` ("usdt" or "eth")
+// says what pays for a USDT send: ETH means the wallet swaps ETH to USDT on Uniswap and the recipient gets exact USDT.
+// The same phone taps the card and signs, so the app also gets the hash.
 app.post("/api/send/start", limit("send-start", 60, 60_000), wrap(async (req, res) => {
   const { cardModulus, amount, to } = req.body || {};
+  const asset = String(req.body?.asset || "usdt").toLowerCase(), payWith = String(req.body?.payWith || "usdt").toLowerCase();
+  if (!["usdt", "eth"].includes(asset) || !["usdt", "eth"].includes(payWith)) throw httpError(400, "Unknown asset.");
+  if ((asset === "eth" || payWith === "eth") && !SWAP) throw httpError(400, "ETH is not available on this network.");
   if (!ethers.isAddress(to)) throw httpError(400, "That is not a valid address.");
   const dest = ethers.getAddress(to);
   if (dest === ethers.ZeroAddress || dest.toLowerCase() === tokenAddr.toLowerCase()) throw httpError(400, "That address cannot receive money.");
-  const p = await openPayment({ cardModulus, amount, to: dest, kind: "send" });
+  const p = await openPayment({ cardModulus, amount, to: dest, kind: "send", asset, payWith });
   if (dest.toLowerCase() === p.wallet.toLowerCase()) { payments.delete(p.id); throw httpError(400, "That is your own wallet."); }
-  res.json({ id: p.id, challenge: p.hash.slice(2, 10), hash: p.hash, wallet: p.wallet, to: dest, expiry: p.expiry, ...(p.swap ? { swap: swapInfo(p.swap) } : {}) });
+  res.json({ id: p.id, challenge: p.hash.slice(2, 10), hash: p.hash, wallet: p.wallet, to: dest, expiry: p.expiry, mode: p.mode, ...(p.swap ? { swap: swapInfo(p.swap) } : {}) });
+}));
+
+// What it would cost in ETH to get an exact USDT amount (shown before the person taps their card). Public market data.
+app.get("/api/quote", limit("quote", 120, 60_000), wrap(async (req, res) => {
+  if (!SWAP) throw httpError(400, "Not available on this network.");
+  const amount = String(req.query.amount || "");
+  if (!/^\d+(\.\d{1,6})?$/.test(amount) || Number(amount) <= 0) throw httpError(400, "Enter an amount above 0.");
+  res.json(swapInfo(await quoteSwap(units(amount))));
+}));
+
+// App "Swap" (Sepolia): turn the wallet's ETH into USDT in the same wallet. ETH to USDT only.
+app.post("/api/swap/start", limit("swap-start", 60, 60_000), wrap(async (req, res) => {
+  if (!SWAP) throw httpError(400, "Swap is not available on this network.");
+  const p = await openPayment({ cardModulus: req.body?.cardModulus, amount: req.body?.amount, kind: "swap" });
+  res.json({ id: p.id, challenge: p.hash.slice(2, 10), hash: p.hash, wallet: p.wallet, to: p.to, expiry: p.expiry, mode: p.mode, swap: swapInfo(p.swap) });
 }));
 
 async function submitPayment(p, phoneSig) {
   const w = walletAt(p.wallet);
-  const list = await signersOf(w);
+  const list = await signersCached(w);
   p.status = "submitting";
   try {
+    const entries = (extra) => sorted([cardEntry(p.cardId, p.cardSig), ...extra]);
+    const [method, build] = p.mode === "swap" ? ["payWithSwap", (extra) => [p.to, p.value, p.swap.max, p.swap.fee, p.expiry, entries(extra)]]
+      : p.mode === "eth" ? ["sendEth", (extra) => [p.to, p.value, p.expiry, entries(extra)]]
+      : ["pay", (extra) => [tokenAddr, p.to, p.value, p.expiry, entries(extra)]];
     let args;
-    const build = SWAP
-      ? (extra) => [p.to, p.value, p.swap.max, p.swap.fee, p.expiry, sorted([cardEntry(p.cardId, p.cardSig), ...extra])]
-      : (extra) => [tokenAddr, p.to, p.value, p.expiry, sorted([cardEntry(p.cardId, p.cardSig), ...extra])];
-    const method = SWAP ? "payWithSwap" : "pay";
     if (p.cardOnly) args = build([]);
-    else args = await withPhone(w, method, (pe) => build([pe]), list, phoneSig);
-    const rc = await send(w, method, args);
-    if (SWAP) { // the ETH the swap really cost, from the wallet's PaidWithSwap event
+    else {
+      for (let tries = 0; ; tries++) {
+        try { args = await withPhone(w, method, (pe) => build([pe]), list, phoneSig); break; }
+        catch (e) {
+          // Right after one of our own payments, the RPC node that answers the simulation can still show the old counter
+          // and reject a correct signature: give it a moment and try again (a few times at most).
+          const lagging = tries < 3 && nonceFloor.has(p.wallet) && /BadSignature|BadCardSignature|BadPhoneSignature/i.test(`${e?.errorName} ${e?.revert?.name} ${e?.shortMessage} ${e?.message}`);
+          if (!lagging) throw e;
+          await new Promise((r) => setTimeout(r, 2500));
+        }
+      }
+    }
+    mark(p, "card", "phone"); // both signatures were accepted by the wallet's own check (the simulation above)
+    // withPhone() above already simulated these exact arguments (unless the card alone approves), so send() skips doing it again.
+    const rc = await send(w, method, args, { simulated: !p.cardOnly, onSent: (hash) => { p.txHash = hash; mark(p, "swap"); } });
+    mark(p, "swap", "confirm");
+    nonceFloor.set(p.wallet, p.nonce + 1n);
+    if (p.mode === "swap") { // the ETH the swap really cost, from the wallet's PaidWithSwap event
       const ev = rc.logs.map((l) => { try { return walletIface.parseLog(l); } catch { return null; } }).find((e) => e?.name === "PaidWithSwap");
       if (ev) p.ethPaid = ethers.formatEther(ev.args.ethIn);
+      mark(p, "receive");
     }
     p.status = "paid";
     p.txHash = rc.hash;
@@ -431,7 +550,12 @@ async function submitPayment(p, phoneSig) {
   }
   p.finished = Date.now();
   const rec = state[chainKey].wallets[p.wallet];
-  if (rec) { rec.history = [historyItem(p), ...(rec.history || [])].slice(0, 200); save(); }
+  if (rec) {
+    rec.history = [historyItem(p), ...(rec.history || [])].slice(0, 200);
+    // a swap into the wallet itself also shows up as a USDT transfer in: keep only our own, clearer, history row
+    if (p.txHash && Array.isArray(rec.received)) rec.received = rec.received.filter((x) => x.txHash !== p.txHash);
+    save();
+  }
 }
 
 app.post("/api/pay/:id/card", wrap(async (req, res) => {
@@ -664,6 +788,7 @@ app.post("/api/recovery-cancel/:id", wrap(async (req, res) => {
 // poll (every POLL_MS, about 10 blocks) reads everything since the last saved block, for all wallets at once, in
 // chunks the public RPC accepts. The wallet screen just reads what was saved.
 const TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
+const ETH_RECEIVED_TOPIC = ethers.id("EthReceived(address,uint256)");
 const POLL_MS = Number(process.env.POLL_MS || 10_000);
 const LOG_CHUNK = 900; // public RPCs allow about 1,000 blocks per log query
 const MAX_CHUNKS = 40; // at most this many queries per poll while catching up
@@ -695,9 +820,21 @@ async function pollTransfers() {
         const to_ = ethers.getAddress("0x" + l.topics[2].slice(26));
         const rec = st.wallets[to_];
         const id = `${l.transactionHash}:${l.index}`;
-        if (!rec || rec.received.some((x) => x.id === id)) continue;
+        if (!rec || rec.received.some((x) => x.id === id) || (rec.history || []).some((h) => h.txHash === l.transactionHash)) continue; // our own swap into this wallet is already in History
         const sender = ethers.getAddress("0x" + l.topics[1].slice(26));
-        rec.received.push({ id, kind: "received", merchantName: "Received", from: sender === ethers.ZeroAddress ? "Test deposit" : short(sender), amount: money(BigInt(l.data)), status: "paid", time: await blockTime(l.blockNumber), txHash: l.transactionHash });
+        rec.received.push({ id, kind: "received", merchantName: "Received", symbol: NET.symbol, from: sender === ethers.ZeroAddress ? "Test deposit" : short(sender), amount: money(BigInt(l.data)), status: "paid", time: await blockTime(l.blockNumber), txHash: l.transactionHash });
+        rec.received = rec.received.slice(-30);
+        dirty = true;
+      }
+    }
+    if (wallets.length && SWAP) { // ETH sent to a wallet (EthReceived). The router's refund of unused swap ETH is not a deposit.
+      const logs = await provider.getLogs({ address: wallets, topics: [ETH_RECEIVED_TOPIC], fromBlock: from, toBlock: to });
+      for (const l of logs) {
+        const rec = st.wallets[ethers.getAddress(l.address)];
+        const sender = ethers.getAddress("0x" + l.topics[1].slice(26));
+        const id = `${l.transactionHash}:${l.index}`;
+        if (!rec || [SWAP.router, SWAP.weth].some((a) => a.toLowerCase() === sender.toLowerCase()) || rec.received.some((x) => x.id === id)) continue;
+        rec.received.push({ id, kind: "received", merchantName: "Received", symbol: "ETH", from: short(sender), amount: ethers.formatEther(BigInt(l.data)), status: "paid", time: await blockTime(l.blockNumber), txHash: l.transactionHash });
         rec.received = rec.received.slice(-30);
         dirty = true;
       }
@@ -714,12 +851,14 @@ async function pollLoop() {
 }
 
 function historyItem(p) {
-  if (p.kind === "send") return { id: p.id, kind: "sent", merchantName: short(p.to), to: p.to, amount: p.amount, status: p.status, error: p.error, txHash: p.txHash, time: p.finished || p.created };
-  return { id: p.id, kind: "payment", merchantName: MERCHANT_NAME, amount: p.amount, status: p.status, error: p.error, cardOnly: !!p.cardOnly, txHash: p.txHash, ...(p.ethPaid ? { ethPaid: p.ethPaid } : {}), time: p.finished || p.created };
+  const base = { id: p.id, amount: p.amount, symbol: p.symbol, status: p.status, error: p.error, txHash: p.txHash, ...(p.ethPaid ? { ethPaid: p.ethPaid } : {}), time: p.finished || p.created };
+  if (p.kind === "swap") return { ...base, kind: "swap", merchantName: "Swapped ETH to USDT" };
+  if (p.kind === "send") return { ...base, kind: "sent", merchantName: short(p.to), to: p.to };
+  return { ...base, kind: "payment", merchantName: MERCHANT_NAME, cardOnly: !!p.cardOnly };
 }
 function publicPayment(p) {
-  const { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly, kind, to } = p;
-  return { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly, kind, to, ...(p.swap ? { swap: { ...swapInfo(p.swap), ethPaid: p.ethPaid } } : {}), merchant: to || MERCHANT, merchantName: kind === "send" ? short(to) : MERCHANT_NAME };
+  const { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly, kind, to, mode, symbol } = p;
+  return { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, cardOnly, kind, to, mode, symbol, steps: stepsOf(p), ...(p.swap ? { swap: { ...swapInfo(p.swap), ethPaid: p.ethPaid } } : {}), merchant: to || MERCHANT, merchantName: kind === "send" ? short(to) : kind === "swap" ? "Your wallet" : MERCHANT_NAME };
 }
 
 // The chain reads behind the wallet screen (balance, limits, cards...) are cached for a few seconds, so many app polls
@@ -731,8 +870,23 @@ const chainViews = new Map(); // wallet -> { at, data }
 async function readChainView(addr) {
   const w = walletAt(addr);
   const [balance, perTx, daily, spent, frozen, softLimit, softCardOnly, threshold, list, pr] = await Promise.all([token.balanceOf(addr), w.perTxLimit(), w.dailyLimit(), spentToday(w), w.frozen(), w.softLimit(), w.softCardOnly(), w.threshold(), signersOf(w), w.phoneRecovery()]);
+  let swapView = {};
+  if (SWAP) {
+    const erc20 = (a) => new ethers.Contract(a, ["function balanceOf(address) view returns (uint256)"], provider);
+    const [ethBal, ethPerTx, ethDaily, ethSpent, ...others] = await Promise.all([provider.getBalance(addr), w.ethPerTxLimit(), w.ethDailyLimit(), ethSpentToday(w), ...SWAP.tokens.map((t) => erc20(t.address).balanceOf(addr).catch(() => 0n))]);
+    swapView = {
+      ethBalance: ethers.formatEther(ethBal),
+      ethPerTxLimit: ethers.formatEther(ethPerTx), ethDailyLimit: ethers.formatEther(ethDaily), ethSpentToday: ethers.formatEther(ethSpent),
+      // The token list: native ETH, the payment USDT, then the other listed tokens, each with its real on-chain balance.
+      tokens: [
+        { symbol: "ETH", name: "Ether", balance: ethers.formatEther(ethBal), native: true },
+        { symbol: NET.symbol, name: "Tether USD", balance: money(balance), address: tokenAddr },
+        ...SWAP.tokens.map((t, i) => ({ symbol: t.symbol, name: t.name, balance: ethers.formatUnits(others[i], t.decimals), address: t.address })),
+      ],
+    };
+  }
   return {
-    ...(SWAP ? { ethBalance: ethers.formatEther(await provider.getBalance(addr)) } : {}),
+    ...swapView,
     balance: money(balance),
     perTxLimit: money(perTx),
     dailyLimit: money(daily),
@@ -763,7 +917,7 @@ app.get("/api/wallet/:addr", wrap(async (req, res) => {
     if (!c.refreshing) { c.refreshing = true; refresh().catch(() => {}).finally(() => { c.refreshing = false; }); }
   }
   // Pending approvals and our own history live in memory, so they are always current.
-  const pending = [...payments.values()].filter((p) => p.wallet.toLowerCase() === addr.toLowerCase() && p.kind !== "send" && p.status === "waiting_for_phone").map(publicPayment);
+  const pending = [...payments.values()].filter((p) => p.wallet.toLowerCase() === addr.toLowerCase() && p.kind === "payment" && p.status === "waiting_for_phone").map(publicPayment);
   const history = [...(rec.history || []), ...receivedOf(rec)].sort((x, y) => y.time - x.time).slice(0, 50);
   const { cardIds, ...chain } = c.data;
   res.json({

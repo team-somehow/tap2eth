@@ -29,7 +29,12 @@ async function main() {
   });
   const rc = await factory.deploymentTransaction().wait();
   const factoryAddr = await factory.getAddress();
-  const implAddr = await factory.implementation();
+  // A load-balanced public RPC can answer from a node that has not seen the new block yet: retry the read.
+  let implAddr;
+  for (let i = 0; i < 10 && !implAddr; i++) {
+    try { implAddr = await factory.implementation(); } catch { await new Promise((r) => setTimeout(r, 3000)); }
+  }
+  if (!implAddr) throw new Error(`Deployed ${factoryAddr} (tx ${rc.hash}) but could not read it back yet. Check the explorer.`);
   console.log(`Tap2EthFactorySwap ${factoryAddr}\n  tx ${rc.hash}  gas ${rc.gasUsed}`);
   console.log(`Tap2EthWalletSwap (implementation) ${implAddr}`);
 

@@ -92,6 +92,18 @@
     @keyframes fall { to { transform: translateY(360px) rotate(540deg); } }
     #s-declined.on .badge { animation: shake .45s ease-in-out .1s both; }
     @keyframes shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(2px); } }
+    /* swap progress ("Swapping on Uniswap"): every tick is a real step reported by the backend */
+    .steps { list-style: none; margin: 6px 0 2px; padding: 0; width: 360px; max-width: 100%; text-align: left; }
+    .steps li { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 15px; font-weight: 700; color: #BDB9AC; }
+    .steps li .dot { width: 20px; height: 20px; flex: none; border-radius: 50%; border: 2px solid #BDB9AC; display: grid; place-items: center; font-size: 12px; line-height: 1; }
+    .steps li.active { color: var(--ink); }
+    .steps li.active .dot { border-color: var(--ink); border-top-color: transparent; animation: spin .8s linear infinite; }
+    .steps li.done { color: var(--ink); }
+    .steps li.done .dot { background: var(--green); border-color: var(--green); color: #fff; }
+    .steps li.done .dot::before { content: "\2713"; font-weight: 900; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .via { font-size: 12px; font-weight: 700; color: var(--soft); letter-spacing: .3px; }
+    .via:empty { display: none; }
     .tx { font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace; font-size: 10px; color: var(--soft); word-break: break-all; max-width: 420px; }
     .tx:empty, #declined-why:empty { display: none; }
 
@@ -185,6 +197,15 @@
     <button class="ghost" id="cancel-phone">Cancel bill</button>
   </section>
 
+  <!-- 3b. Paid with ETH: the swap on Uniswap, step by step -->
+  <section class="screen center" id="s-swap">
+    <div class="title">Swapping on Uniswap</div>
+    <div class="sub" id="swap-sub">ETH to USDT</div>
+    <div class="via">UNISWAP V3</div>
+    <ul class="steps" id="swap-steps"></ul>
+    <div class="tx" id="swap-tx"></div>
+  </section>
+
   <!-- 4a. Paid -->
   <section class="screen center" id="s-paid">
     <div class="confetti" id="confetti"></div>
@@ -192,6 +213,7 @@
     <div class="big" id="paid-amount">0 <span class="cur cur-sym">USDT</span></div>
     <div class="title paid-t">Paid</div>
     <div class="sub">Thanks for visiting Team Somehow Café</div>
+    <div class="via" id="paid-via"></div>
     <div class="tx" id="paid-tx"></div>
   </section>
 
@@ -214,6 +236,10 @@
         <button id="vol-up" aria-label="Louder">+</button>
         <span class="vol-n" id="vol-n">5</span>
       </div></div>
+
+      <div class="eyebrow">Network</div>
+      <div class="panel" id="net-list"><div class="row"><span class="note">Looking for networks…</span></div></div>
+      <div class="msg" id="net-msg"></div>
 
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center"><span>Wi-Fi</span><button class="plain" id="wifi-rescan" style="font-size:12px;padding:0">Scan again</button></div>
       <div class="panel" id="wifi-list"><div class="row"><span class="note">Looking for networks…</span></div></div>
@@ -308,7 +334,36 @@
   $("merchant").addEventListener("pointerdown", () => { stopHold(); holdTimer = setTimeout(openSettings, 2000); });
   for (const ev of ["pointerup", "pointerleave", "pointercancel"]) $("merchant").addEventListener(ev, stopHold);
 
-  function openSettings() { $("m-settings").classList.add("on"); $("wifi-msg").textContent = ""; loadWifi(false); }
+  function openSettings() { $("m-settings").classList.add("on"); $("wifi-msg").textContent = ""; $("net-msg").textContent = ""; loadNetworks(); loadWifi(false); }
+
+  // ---- network: one backend serves several chains, one route each. Pressing one switches this terminal to it at once.
+  async function loadNetworks() {
+    const box = $("net-list");
+    let info;
+    try { info = await (await fetch("/networks")).json(); } catch { info = { networks: [] }; }
+    box.innerHTML = "";
+    if (!info.networks || !info.networks.length) { box.innerHTML = `<div class="row"><span class="grow">${info.name || "One network"}</span><span class="note">only one on this backend</span></div>`; return; }
+    for (const n of info.networks) {
+      const row = document.createElement("div"); row.className = "row";
+      const cur = n.id === info.current;
+      row.innerHTML = `<span class="grow"></span><span class="note"></span>`;
+      row.firstChild.textContent = n.name;
+      row.lastChild.textContent = cur ? "In use" : n.online === false ? "offline" : "";
+      if (!cur && n.online !== false) {
+        const b = document.createElement("button"); b.className = "plain"; b.textContent = "Use"; b.style.cssText = "font-weight:800";
+        b.onclick = () => switchNetwork(n);
+        row.appendChild(b);
+      }
+      box.appendChild(row);
+    }
+  }
+  async function switchNetwork(n) {
+    $("net-msg").className = "msg"; $("net-msg").textContent = `Switching to ${n.name}…`;
+    const r = await post("/network", { id: n.id }).then((x) => x.json()).catch(() => ({ error: "Couldn't switch." }));
+    if (r.error) { $("net-msg").className = "msg err"; $("net-msg").textContent = r.error; return; }
+    $("net-msg").textContent = `Now using ${n.name}.`;
+    setTimeout(loadNetworks, 1200);
+  }
   function closeSettings() { $("m-settings").classList.remove("on"); $("m-join").classList.remove("on"); }
   $("set-done").onclick = closeSettings;
 
@@ -458,7 +513,9 @@
     const d = String(s.detail || "");
     if (/OverLimit/.test(d)) return "Over the customer's spending limit.";
     if (/IsFrozen/.test(d)) return "The customer's wallet is frozen.";
+    if (/InsufficientEth/.test(d)) return "Not enough ETH in the customer's wallet.";
     if (/InsufficientBalance/.test(d)) return "Not enough money in the customer's wallet.";
+    if (/No Uniswap pool/.test(d)) return "Uniswap can't swap this amount right now. Try a smaller amount.";
     if (/rejected/.test(d)) return "The customer declined on their phone.";
     if (/not registered/.test(d)) return "This card isn't linked to a Tap2ETH wallet yet.";
     if (/Expired/.test(d)) return "The request timed out. Start a new bill.";
@@ -483,7 +540,7 @@
     }
     if (typeof s.volume === "number" && s.volume !== vol && Date.now() > volHold) { vol = s.volume; drawVol(); }
     $("offline").classList.toggle("on", s.online === false);
-    const key = JSON.stringify([s.mode, s.detail, s.ok, s.tx]);
+    const key = JSON.stringify([s.mode, s.detail, s.ok, s.tx, s.swap]);
     if (key === last) return;
     last = key;
     clearTimeout(resetTimer);
@@ -496,12 +553,24 @@
       $("tapmark").classList.toggle("busy", reading);
       return show("s-tap");
     }
+    if (s.mode === "waiting" && s.swap) {  // paid with ETH: the swap page
+      const ul = $("swap-steps"); ul.innerHTML = "";
+      for (const st of s.swap.steps) {
+        const li = document.createElement("li"); li.className = st.state;
+        li.innerHTML = `<span class="dot"></span><span></span>`; li.lastChild.textContent = st.label;
+        ul.appendChild(li);
+      }
+      $("swap-sub").textContent = s.swap.eth ? `${fmt(s.amount)} ${CUR} ≈ ${Number(s.swap.eth).toFixed(10).replace(/0+$/, "")} ETH` : "ETH to USDT";
+      $("swap-tx").textContent = s.swap.tx ? "tx " + s.swap.tx.slice(0, 18) + "…" + s.swap.tx.slice(-6) : "";
+      return show("s-swap");
+    }
     if (s.mode === "waiting") {
       $("phone-sub").textContent = /reconnecting/i.test(s.detail || "") ? "Connection lost. Reconnecting… the payment isn't lost." : `${fmt(s.amount)} ${CUR} · card read. You can remove the card now.`;
       return show("s-phone");
     }
     if (s.ok === true) {
       $("paid-amount").innerHTML = s.amount ? `${fmt(s.amount)}<span class="cur cur-sym">${CUR}</span>` : "Card linked";
+      $("paid-via").textContent = s.swap ? "Paid with ETH · swapped on Uniswap" : "";
       $("paid-tx").textContent = s.tx ? "tx " + s.tx.slice(0, 18) + "…" + s.tx.slice(-6) : (s.detail || "");
       show("s-paid");
       if (s.amount) { confetti(); nextOrder(); }

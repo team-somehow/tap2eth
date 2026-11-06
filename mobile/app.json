@@ -43,7 +43,8 @@
         {
           "cameraPermission": "Tap2ETH uses the camera to scan a wallet address QR code."
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "backgroundColor": "#F3F0E8"
   }

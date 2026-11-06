@@ -4,6 +4,7 @@
 import NfcManager, { NfcTech } from "react-native-nfc-manager";
 import { sha1 } from "@noble/hashes/legacy.js";
 import CAPK from "./capk.json";
+import { cue } from "./sounds";
 
 const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("");
 const fromHex = (h) => Uint8Array.from(h.match(/../g).map((b) => parseInt(b, 16)));
@@ -139,6 +140,21 @@ async function cardSign(challengeHex) {
 }
 
 let started = false;
+
+// What the card is doing right now, for the banner and the sounds (the same moments the Pi terminal reacts to):
+// waiting (hold it to the phone) -> detected (don't move it) -> almost (still reading) -> done (you can lift it) | moved (try again).
+let phase = "idle";
+let phaseTimer;
+const listeners = new Set();
+export const getCardPhase = () => phase;
+export const onCardPhase = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+function setPhase(next, clearAfterMs) {
+  phase = next;
+  clearTimeout(phaseTimer);
+  listeners.forEach((fn) => fn(phase));
+  if (clearAfterMs) phaseTimer = setTimeout(() => setPhase("idle"), clearAfterMs);
+}
+
 /**
  * One tap: read the card, rebuild its key, then (optionally) ask the card to sign.
  * `getChallenge(cardKey)` may call the server while the card is still on the phone.
@@ -146,18 +162,31 @@ let started = false;
 export async function withCard(getChallenge) {
   if (!started) { await NfcManager.start(); started = true; }
   if (!(await NfcManager.isEnabled())) throw new Error("Turn on NFC in your phone's settings.");
+  let almost;
   try {
+    setPhase("waiting");
+    cue("prompt");
     await NfcManager.requestTechnology(NfcTech.IsoDep, { alertMessage: "Hold your card to the back of the phone" });
+    setPhase("detected"); // Android found the card
+    cue("tap");
+    almost = setTimeout(() => { if (phase === "detected") setPhase("almost"); }, 1500);
     try { await NfcManager.setTimeout(3000); } catch {}
     const card = await readCard();
     const key = cardPublicKey(card);
     const challenge = await getChallenge(key);
     const signature = challenge ? await cardSign(challenge) : null;
+    setPhase("done", 2800); // the card is finished: it can be lifted now
+    cue("card_ok");
     return { ...key, signature };
+  } catch (e) {
+    if (/Tag was lost|transceive/i.test(String(e?.message || e))) { setPhase("moved", 3500); cue("retry"); }
+    else setPhase("idle");
+    throw e;
   } finally {
+    clearTimeout(almost);
     // Awaited, so a second tap right after this one can't have its new request cancelled by this cleanup.
     await NfcManager.cancelTechnologyRequest().catch(() => {});
   }
 }
 
-export const cancelCard = () => NfcManager.cancelTechnologyRequest().catch(() => {});
+export const cancelCard = () => { setPhase("idle"); return NfcManager.cancelTechnologyRequest().catch(() => {}); };

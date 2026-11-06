@@ -167,7 +167,7 @@ class Terminal:
             self.ser.open()
         self.lock = threading.Lock()
         self.sig_event = threading.Event()
-        self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None, "volume": level, "online": None, "cur": "USDT", "powered": ""}
+        self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None, "volume": level, "online": None, "cur": "USDT", "powered": "", "swap": None, "network": ""}
         self.edge, self.edge_tried = None, 0  # the terminal's own chain checks (chain.py), once the relayer gives us its config
         self._reset_tap()
 
@@ -245,6 +245,14 @@ class Terminal:
         self.edge_tried = time.monotonic()
         try:
             cfg = self.post("/api/terminal/config")
+            self.set(network=cfg.get("name") or "")
+            if cfg.get("mode") == "swap":
+                # Ethereum Sepolia: a payment can be an ETH to USDT swap on Uniswap, whose hash needs a live quote. So this
+                # terminal does not rebuild the hash itself; the relayer does (the slower, equally safe path).
+                self.edge = None
+                self.set(cur=cfg.get("symbol") or "USDT", powered=cfg.get("poweredBy") or "")
+                print(f"swap network {cfg.get('name')}: the relayer builds the payment", flush=True)
+                return
             rpc = RPC_BY_CHAIN.get(int(cfg["chainId"]), DEFAULT_RPC)  # the chain the relayer runs on
             try:
                 rpc = open(RPC_FILE).read().strip() or rpc
@@ -255,8 +263,39 @@ class Terminal:
             print(f"terminal checks payments itself on chain {cfg['chainId']} via {rpc.split('/')[2]}", flush=True)
         except Exception as e:  # noqa: BLE001 - an old relayer has no /api/terminal/config; that's fine
             self.edge = None
-            self.set(powered="")
+            self.set(powered="", swap=None)
             print(f"terminal-side checks off, using the relayer's: {e}", flush=True)
+
+    # ---- network switch (Settings). One backend URL serves several networks, one route each: /whitechain, /sepolia, ...
+    # The chosen route is saved in the same file as the backend address, so it survives a restart and applies at once.
+    def _split_url(self):
+        from urllib.parse import urlparse
+        u = urlparse(self.relayer_url())
+        return f"{u.scheme}://{u.netloc}", u.path.rstrip("/")
+
+    def networks(self):
+        base, route = self._split_url()
+        try:
+            req = urllib.request.Request(base + "/api/networks", headers=NGROK_HEADER)
+            nets = json.loads(urllib.request.urlopen(req, timeout=5).read()).get("networks", [])
+        except Exception:  # noqa: BLE001 - a backend with a single network has no list
+            return {"networks": [], "current": route.strip("/"), "name": self.state.get("network", "")}
+        current = route.strip("/") or next((n["id"] for n in nets if n.get("default")), "")
+        return {"networks": nets, "current": current, "name": self.state.get("network", "")}
+
+    def switch_network(self, net_id):
+        if self.state["mode"] != "idle":
+            raise RuntimeError("Finish or cancel the current payment first.")
+        info = self.networks()
+        match = next((n for n in info["networks"] if n["id"] == net_id), None)
+        if match is None:
+            raise RuntimeError("Unknown network.")
+        base, _ = self._split_url()
+        with open(RELAYER_FILE, "w") as f:
+            f.write(base + match["route"])
+        self.edge = None
+        self.set(powered="", swap=None, network=match["name"])
+        threading.Thread(target=self.setup_edge, daemon=True).start()  # picks up the new network's currency and badge
 
     def post(self, path, body=None):
         req = urllib.request.Request(self.relayer_url() + path, data=json.dumps(body or {}).encode() if body is not None else None,
@@ -276,13 +315,13 @@ class Terminal:
 
     # merchant actions
     def start_payment(self, amount):
-        self.set(mode="pay", amount=amount, screen=f"{amount} {self.state['cur']}", detail="Tap card", tx=None, ok=None, code=None)
+        self.set(mode="pay", amount=amount, screen=f"{amount} {self.state['cur']}", detail="Tap card", tx=None, ok=None, code=None, swap=None)
 
     def start_register(self, code):
-        self.set(mode="register", code=code, screen="Register card", detail=f"Code {code} — tap card", tx=None, ok=None, amount=None)
+        self.set(mode="register", code=code, screen="Register card", detail=f"Code {code} — tap card", tx=None, ok=None, amount=None, swap=None)
 
     def cancel(self):
-        self.set(mode="idle", screen="Ready", detail="", amount=None, code=None, tx=None, ok=None)
+        self.set(mode="idle", screen="Ready", detail="", amount=None, code=None, tx=None, ok=None, swap=None)
 
     def write(self, line):
         if self.ser is None:
@@ -455,10 +494,16 @@ class Terminal:
                 if lost:
                     lost = 0
                     self.set(detail="Card ✓ — approve on your phone…")
+                if p.get("mode") == "swap" and p["status"] in ("submitting", "paid"):
+                    # Paid with ETH: show the "Swapping on Uniswap" steps as the relayer reaches them.
+                    self.set(swap={"steps": p["steps"], "eth": (p.get("swap") or {}).get("ethQuote"), "tx": p.get("txHash")})
                 if p["status"] == "paid":
+                    if p.get("mode") == "swap":
+                        time.sleep(1.6)  # let the last tick be seen before the Paid screen
                     self.set(mode="done", screen=f"Paid {p['amount']} {self.state['cur']} ✓", detail="Thank you!", tx=p.get("txHash"), ok=True)
                     return
                 if p["status"] in ("failed", "rejected"):
+                    self.set(swap=None)
                     self.set(mode="done", screen="Declined ✗", detail=p.get("error") or p["status"], ok=False)
                     return
         except Exception as e:  # noqa: BLE001
@@ -589,6 +634,10 @@ def make_handler(term):
         def do_GET(self):
             if self.path == "/state":
                 return self._json(term.state)
+            if self.path == "/networks":
+                if not self._local():
+                    return self._json({"error": "Settings work on the terminal's own screen only."}, 403)
+                return self._json(term.networks())
             if self.path.startswith("/wifi"):
                 if not self._local():
                     return self._json({"error": "Settings work on the terminal's own screen only."}, 403)
@@ -626,6 +675,14 @@ def make_handler(term):
                 except WifiError as e:
                     return self._json({"error": str(e)}, 400)
                 return self._json({"ok": True, "current": ssid})
+            elif self.path == "/network":
+                if not self._local():
+                    return self._json({"error": "Settings work on the terminal's own screen only."}, 403)
+                try:
+                    term.switch_network(str(body.get("id", "")))
+                except RuntimeError as e:
+                    return self._json({"error": str(e)}, 400)
+                return self._json({"ok": True})
             elif self.path == "/shutdown":
                 if not self._local():
                     return self._json({"error": "Settings work on the terminal's own screen only."}, 403)

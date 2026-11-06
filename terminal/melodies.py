@@ -32,6 +32,8 @@ MELODIES = {
     "declined": ((G5, 140), (E5, 140), (C5, 140), (REST, 40), (G4, 160), (C4, 380)),
     "cancel": ((E5, 50), (C5, 120)),
     "volume": ((A5, 60),),  # heard when the volume level changes
+    # one more step of the ETH to USDT swap finished: a small rising tick
+    "swap_step": ((E6, 40), (A6, 70)),
 }
 CUES = tuple(MELODIES)
 
@@ -61,6 +63,11 @@ def _tap_cue(before, after):
     return None
 
 
+def _swap_done(state):
+    swap = state.get("swap") or {}
+    return sum(1 for step in swap.get("steps", []) if step.get("state") == "done")
+
+
 def cue_for(before, after):
     """Name of the melody a change of terminal state should play, or None."""
     if after["ok"] is True and before["ok"] is not True:
@@ -69,6 +76,8 @@ def cue_for(before, after):
         return "declined"
     if after["mode"] == "waiting" and before["mode"] != "waiting":
         return "card_ok"
+    if after["mode"] == "waiting" and _swap_done(after) > _swap_done(before):
+        return "swap_step"
     if after["mode"] == "idle":
         cancelled = before["mode"] != "idle" and before["ok"] is None
         return "cancel" if cancelled else None

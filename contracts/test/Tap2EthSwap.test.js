@@ -14,6 +14,8 @@ const UNI = { // Uniswap v3 on Sepolia
   weth: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
   usdt: "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0",
 };
+// Pinned so Hardhat caches the forked state on disk: the first run downloads it, later runs are fast and repeatable.
+const FORK_BLOCK = Number(process.env.FORK_BLOCK || 12077900);
 const FEE = 10000; // the 1% WETH/USDT pool has the most liquidity
 const USDT = (x) => ethers.parseUnits(String(x), 6);
 const cardSig = (card, h) => "0x" + card.sign(Buffer.from(h.slice(2, 10), "hex")).toString("hex");
@@ -24,7 +26,7 @@ describe("Tap2ETH wallet: pay in ETH through Uniswap v3 (Sepolia fork)", functio
 
   before(async function () {
     try {
-      await network.provider.request({ method: "hardhat_reset", params: [{ forking: { jsonRpcUrl: SEPOLIA_RPC } }] });
+      await network.provider.request({ method: "hardhat_reset", params: [{ forking: { jsonRpcUrl: SEPOLIA_RPC, blockNumber: FORK_BLOCK } }] });
     } catch (e) {
       console.log("      (no Sepolia fork available, skipping:", e.message.slice(0, 80), ")");
       this.skip();
