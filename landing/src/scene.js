@@ -412,7 +412,8 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
   let screenApprove = phoneTex(false), screenPaid = phoneTex(true);
   const screenMat = new THREE.MeshBasicMaterial({ map: screenApprove, toneMapped: false, transparent: true });
   const screen = new THREE.Mesh(remapUV(new THREE.ShapeGeometry(rrShape(6.6, 14.2, 0.85), 24), 6.6, 14.2), screenMat);
-  screen.position.z = 0.435; phone.add(screen);
+  // Separate the display from the glass so distant views do not flicker.
+  screen.position.z = 0.48; phone.add(screen);
   const fpGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowMap, color: 0xFFE600, transparent: true, depthWrite: false, opacity: 0 }));
   fpGlow.position.set(0, -4.3, 0.5); fpGlow.scale.set(3.6, 3.6, 1); phone.add(fpGlow);
   const FP_LOCAL = new THREE.Vector3(0, -4.3, 0.5);
@@ -441,13 +442,13 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
   const DEF = {
     tx: 0, ty: 0, tz: 0, yaw: 0, pitch: 0.05, dist: 19,
     cx: 0, cy: 0, cz: 0, crx: 0, cry: 0, crz: 0,
-    idle: 0, explode: 0, xray: 0, coil: 0, power: 0, data: 0, chipOpen: 0, key: 0, streams: 0, verify: 0, cardFade: 1,
+    idle: 0, heroFrame: 0, explode: 0, xray: 0, coil: 0, power: 0, data: 0, chipOpen: 0, key: 0, streams: 0, verify: 0, cardFade: 1,
     reader: 0, field: 0, phone: 0, contract: 0, beams: 0, paid: 0, shadow: 0, env: 1, vis: 1, msy: 0.2,
     lab_reader: 0, lab_layers: 0, lab_chip: 0, lab_key: 0, lab_stream: 0, lab_pay: 0, lab_contract: 0,
   };
   const CHIP_WORLD_FLAT = { x: CHIP.x, y: 0.5 + 0.05, z: -CHIP.y };
   const S = {};
-  S.hero = { cy: 0.15, crx: -0.16, cry: -0.52, crz: 0.07, idle: 1, shadow: 1, msy: 0.28 };
+  S.hero = { cy: 0.15, crx: -0.16, cry: -0.52, crz: 0.07, idle: 1, heroFrame: 1, shadow: 1, msy: 0.28 };
   S.statement = { cy: 0.4, cx: 0.6, crx: -0.42, cry: -0.95, crz: 0.32, dist: 25, idle: 0.6, shadow: 0.5, msy: 0.3 };
   S.tap1 = { ty: -0.9, yaw: 0.62, pitch: 0.6, dist: 19, cy: 0.5, crx: -Math.PI / 2, reader: 1, field: 1, env: 0.55, lab_reader: 1, coil: 0.15 };
   S.tap2 = { ty: -0.3, yaw: 0.88, pitch: 0.5, dist: 18.5, cy: 0.5, crx: -Math.PI / 2, explode: 1, xray: 0.55, coil: 1, power: 1, reader: 1, field: 0.6, env: 0.6, lab_layers: 1 };
@@ -502,13 +503,21 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
     line.style.width = len + 'px'; line.style.transform = `rotate(${ang}rad)`;
     txt.style.left = d.dx + 'px'; txt.style.top = d.dy + 'px';
     txt.style.transform = `translate(${d.dx < 0 ? '-100%' : '0'}, -50%)`;
-    return { ...d, el, v: new THREE.Vector3() };
+    return { ...d, el, textEl: txt, lineEl: line, width: 0, height: 0, v: new THREE.Vector3() };
   });
 
   /* ---------- scroll → station mapping ---------- */
-  let anchors = [];
+  let anchors = [], heroBounds = null;
   function measure() {
     const maxScroll = document.documentElement.scrollHeight - innerHeight;
+    const heroRect = heroStage.getBoundingClientRect();
+    heroBounds = heroRect.width > 0 && heroRect.height > 0
+      ? { left: heroRect.left, top: heroRect.top + scrollY, width: heroRect.width, height: heroRect.height }
+      : null;
+    for (const L of labels) {
+      L.width = L.textEl.offsetWidth;
+      L.height = L.textEl.offsetHeight;
+    }
     anchors = [...document.querySelectorAll('[data-station]')].map(el => {
       const r = el.getBoundingClientRect(), top = r.top + scrollY;
       let a = el.dataset.anchor === 'start' ? 0 : el.dataset.anchor === 'top' ? top - innerHeight * 0.55 : top + r.height / 2 - innerHeight / 2;
@@ -539,7 +548,7 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
   let vw = 0, vh = 0, mobile = false;
   function resize() {
     const w = canvas.clientWidth || innerWidth, h = canvas.clientHeight || innerHeight;
-    if (mobile && w === vw && Math.abs(h - vh) < 160) return; // phone address bar showing/hiding
+    if (w === vw && h === vh) return;
     vw = w; vh = h; mobile = vw < 900;
     renderer.setPixelRatio(Math.min(devicePixelRatio, mobile ? 1.75 : 2));
     renderer.setSize(vw, vh, false);
@@ -549,7 +558,9 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
     measure();
   }
   addEventListener('resize', resize);
-  const ro = new ResizeObserver(() => measure()); ro.observe(document.body);
+  const ro = new ResizeObserver(() => measure());
+  ro.observe(document.body);
+  ro.observe(heroStage);
 
   /* ---------- apply state ---------- */
   const tmpV = new THREE.Vector3(), camPos = new THREE.Vector3(), camTgt = new THREE.Vector3();
@@ -559,15 +570,32 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
     const visible = c.vis > 0.01;
     world.visible = visible;
 
-    // camera framing: object right of the text column (desktop) or above the text (phone)
+    // Story framing keeps the object beside the text, or above it on a phone.
+    // In the hero, frame the card inside its actual layout slot instead of a
+    // viewport guess. This also makes the visual-first mobile layout stay clear
+    // of the navigation. The station value blends both framings during scroll.
     const areaAspect = mobile ? vw / (vh * 0.56) : (vw * 0.6) / vh;
     const fit = Math.max(1, (mobile ? 1.6 : 0.95) / areaAspect);
+    // Keep the mobile story inside the upper half of the viewport, clear of
+    // the copy below it. Hero size continues to come from its own layout slot.
+    const storyDist = c.dist * fit * (mobile ? 1.36 : 1);
+    const heroFrame = heroBounds ? c.heroFrame : 0;
+    const halfFov = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+    const heroDist = heroBounds ? Math.max(
+      W * vh / (2 * halfFov * heroBounds.width * 0.88),
+      (Hc + 0.65) * vh / (2 * halfFov * heroBounds.height * 0.8),
+    ) : storyDist;
     camTgt.set(c.tx, c.ty, c.tz);
-    const d = c.dist * fit;
+    camTgt.lerp(tmpV.set(c.cx, c.cy, c.cz), heroFrame);
+    const d = lerp(storyDist, heroDist, heroFrame);
     camPos.set(Math.sin(c.yaw) * Math.cos(c.pitch), Math.sin(c.pitch), Math.cos(c.yaw) * Math.cos(c.pitch)).multiplyScalar(d).add(camTgt);
     camera.position.copy(camPos); camera.up.set(0, 1, 0); camera.lookAt(camTgt);
-    const sx = mobile ? 0 : 0.2, sy = mobile ? c.msy : 0;
-    camera.setViewOffset(vw, vh, -sx * vw, sy * vh, vw, vh);
+    const sx = mobile ? 0 : 0.2, sy = mobile ? clamp(c.msy + 0.04, 0.24, 0.28) : 0;
+    const heroOffsetX = heroBounds ? vw / 2 - (heroBounds.left + heroBounds.width / 2) : 0;
+    const heroOffsetY = heroBounds ? vh / 2 - (heroBounds.top - scrollY + heroBounds.height / 2) : 0;
+    camera.setViewOffset(vw, vh,
+      lerp(-sx * vw, heroOffsetX, heroFrame),
+      lerp(sy * vh, heroOffsetY, heroFrame), vw, vh);
 
     // card pose + hero idle motion
     const idle = reduced ? 0 : c.idle;
@@ -649,7 +677,7 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
     beamGroup.visible = c.beams > 0.01; beamMat.uniforms.uI.value = c.beams;
 
     // shadow under the hero card
-    shadow.material.opacity = c.shadow * 0.9;
+    shadow.material.opacity = c.shadow * 0.9 * (1 - c.heroFrame * (mobile ? 0.65 : 0));
     const spread = Math.abs(Math.cos(cardRig.rotation.y)) * W * 0.9 + 1.4;
     shadow.scale.set(spread, 2.2, 1); shadow.position.x = c.cx; shadow.position.z = c.cz;
 
@@ -664,10 +692,28 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
   function placeLabels(c) {
     for (const L of labels) {
       const o = c[L.p] * (c.vis > 0.5 ? 1 : 0);
-      if (o < 0.02) { if (L.el.style.opacity !== '0') L.el.style.opacity = '0'; continue; }
+      if (o < 0.02 || (mobile && L.minor)) { if (L.el.style.opacity !== '0') L.el.style.opacity = '0'; continue; }
       L.v.set(...L.at); L.obj.localToWorld(L.v); L.v.project(camera);
       if (L.v.z > 1) { L.el.style.opacity = '0'; continue; }
       const x = (L.v.x + 1) / 2 * vw, y = (1 - L.v.y) / 2 * vh;
+      const margin = mobile ? 14 : 20;
+      const bottom = mobile ? vh * 0.48 : vh - margin;
+      if (x < margin / 2 || x > vw - margin / 2 || y < margin / 2 || y > bottom) {
+        L.el.style.opacity = '0'; continue;
+      }
+      // Prefer the authored side, flip when it runs off-screen, then clamp.
+      // Only the caption moves: its leader remains attached to the 3D point.
+      let left = x + L.dx - (L.dx < 0 ? L.width : 0);
+      if (left < margin) left = x + Math.abs(L.dx);
+      if (left + L.width > vw - margin) left = x - Math.abs(L.dx) - L.width;
+      left = clamp(left, margin, Math.max(margin, vw - margin - L.width));
+      const captionY = clamp(y + L.dy, margin + L.height / 2, bottom - L.height / 2);
+      const dx = (left > x ? left : left + L.width) - x, dy = captionY - y;
+      L.textEl.style.left = `${(left - x).toFixed(1)}px`;
+      L.textEl.style.top = `${dy.toFixed(1)}px`;
+      L.textEl.style.transform = 'translateY(-50%)';
+      L.lineEl.style.width = `${Math.hypot(dx, dy).toFixed(1)}px`;
+      L.lineEl.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
       L.el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
       L.el.style.opacity = o.toFixed(3);
     }
@@ -679,7 +725,7 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
   computeTarget(); Object.assign(cur, target);
   function frame() {
     const dt = Math.min(clock.getDelta(), 0.05);
-    time += reduced ? dt * 0.3 : dt;
+    time += reduced ? 0 : dt;
     computeTarget();
     const k = reduced ? 1 : 1 - Math.exp(-4.2 * dt);
     for (const key of KEYS) cur[key] += (target[key] - cur[key]) * k;
@@ -706,6 +752,7 @@ export function initScene({ canvas, heroStage, labelsEl, onReady = () => {} }) {
     contractFace.material.map = swap(contractFace.material.map, contractTex());
     const atlas = swap(glyphMap, glyphTex());
     challenge.material.uniforms.uAtlas.value = signature.material.uniforms.uAtlas.value = atlas;
+    measure();
     start();
     requestAnimationFrame(() => { if (!disposed) onReady(); });
   });
