@@ -58,7 +58,29 @@ const TokenArt = art("TestUSDC.sol", "TestUSDC");
 const walletIface = new ethers.Interface(WalletArt.abi);
 
 // batchMaxCount 1: public RPC endpoints (Ankr) reject batched requests as too large.
-const provider = new ethers.JsonRpcProvider(RPC, undefined, { batchMaxCount: 1 });
+// A flaky connection (DNS or timeouts) must not fail a payment: retry once, then try the backup RPC servers.
+const TRANSIENT = /cancel|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|socket hang up|fetch failed|timeout|TLS|SERVER_ERROR|UND_ERR|network/i;
+class FailoverProvider extends ethers.JsonRpcProvider {
+  constructor(urls) {
+    // With a known chain ID, skip ethers' network-detection calls (they loop with "failed to detect network" when a node is slow).
+    const known = NET.chainId ? ethers.Network.from(NET.chainId) : undefined;
+    const opts = { batchMaxCount: NET.batch || 1, ...(known ? { staticNetwork: known } : {}) };
+    super(urls[0], known, opts);
+    this.backups = urls.slice(1).map((u) => new ethers.JsonRpcProvider(u, known, opts));
+  }
+  async send(method, params) {
+    let last;
+    for (const next of [null, null, ...this.backups]) {
+      try { return await (next ? next.send(method, params) : super.send(method, params)); } catch (e) {
+        last = e;
+        if (!TRANSIENT.test(`${e.message} ${e.code} ${e.cause?.code || ""}`)) throw e; // a real answer (revert, bad request): don't retry
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    throw last;
+  }
+}
+const provider = new FailoverProvider([RPC, ...(NET.rpcBackups || []), ...(process.env[`${NETWORK.toUpperCase()}_RPC_BACKUP_URL`] ? [process.env[`${NETWORK.toUpperCase()}_RPC_BACKUP_URL`]] : [])]);
 const HARDHAT_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"; // public dev account #0
 if (!NET_KEY && !IS_LOCAL) {
   console.error(`${NET.keyEnv} is required on a real network (refusing to use the public Hardhat key).`);
@@ -160,6 +182,8 @@ async function send(contract, method, args) {
 }
 
 function decodeError(e) {
+  // A dropped connection to the chain is not the customer's mistake and not a cancel: say what happened.
+  if (/CANCELLED|TIMEOUT|NETWORK_ERROR|SERVER_ERROR|ECONNRESET|ENOTFOUND|ETIMEDOUT|request timeout|cancelled before sending|socket|TLS/i.test(`${e?.code} ${e?.shortMessage || ""} ${e?.message || ""}`)) return "The blockchain connection dropped. Nothing was paid. Try again in a moment.";
   if (e?.revert?.name) return e.revert.name;
   const data = e?.data || e?.info?.error?.data || e?.error?.data;
   if (data) { try { const n = walletIface.parseError(data)?.name; if (n) return n; } catch {} }
@@ -203,7 +227,11 @@ async function spentToday(w) {
 const app = express();
 app.use(express.json({ limit: "64kb" }));
 const wrap = (fn) => async (req, res) => {
-  try { await fn(req, res); } catch (e) { res.status(e.status || 400).json({ error: e.status ? e.message : decodeError(e) }); }
+  try { await fn(req, res); } catch (e) {
+    // Someone else sent a transaction from the relayer's account (a manual transfer): our saved counter is behind.
+    // Re-read it from the chain so the next request works.
+    if (/nonce (has already been used|too low)|NONCE_EXPIRED/i.test(`${e.message} ${e.code} ${e.shortMessage || ""}`)) { relayer.reset(); console.log("relayer nonce out of date, reset"); }
+    res.status(e.status || 400).json({ error: e.status ? e.message : decodeError(e) }); }
 };
 
 app.get("/api/health", wrap(async (req, res) => {
@@ -679,14 +707,15 @@ app.get("/api/wallet/:addr", wrap(async (req, res) => {
   const rec = state[chainKey].wallets[addr] || { names: {}, history: [] };
   let c = chainViews.get(addr);
   let stale = false;
-  if (!c || req.query.fresh === "1" || Date.now() - c.at > VIEW_TTL) {
-    try {
-      c = { at: Date.now(), data: await readChainView(addr) };
-      chainViews.set(addr, c);
-    } catch (e) {
+  const refresh = async () => { const d = await readChainView(addr); chainViews.set(addr, { at: Date.now(), data: d }); return chainViews.get(addr); };
+  if (!c || req.query.fresh === "1") {
+    try { c = await refresh(); } catch (e) {
       if (!c) throw e; // nothing cached yet: this is a real error
       stale = true; // the RPC failed: keep showing the last good numbers
     }
+  } else if (Date.now() - c.at > VIEW_TTL) {
+    // Answer at once with the last numbers and refresh in the background: a slow chain must not make the screen wait.
+    if (!c.refreshing) { c.refreshing = true; refresh().catch(() => {}).finally(() => { c.refreshing = false; }); }
   }
   // Pending approvals and our own history live in memory, so they are always current.
   const pending = [...payments.values()].filter((p) => p.wallet.toLowerCase() === addr.toLowerCase() && p.kind !== "send" && p.status === "waiting_for_phone").map(publicPayment);
@@ -709,6 +738,18 @@ app.get("/api/wallet/:addr", wrap(async (req, res) => {
 
 app.get("/", (req, res) => res.type("text").send("Tap2ETH relayer v2. See /api/health."));
 
-setup()
+// The network can blip while starting (Wi-Fi switching, DNS): try a few times before giving up.
+async function setupWithRetry(tries = 8) {
+  for (let i = 1; ; i++) {
+    try { return await setup(); } catch (e) {
+      const transient = /ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|fetch failed|timeout|could not detect network|SERVER_ERROR/i.test(`${e.message} ${e.code} ${e.cause?.code || ""}`);
+      if (!transient || i >= tries) throw e;
+      console.log(`can't reach ${RPC.split("/")[2]} yet (${e.cause?.code || e.code || e.message}). Retrying in 5 s (${i}/${tries - 1})...`);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+}
+
+setupWithRetry()
   .then(() => { pollLoop(); return app.listen(PORT, "0.0.0.0", () => console.log(`relayer v2 on http://0.0.0.0:${PORT}`)); })
   .catch((e) => { console.error("setup failed:", e.message); process.exit(1); });
