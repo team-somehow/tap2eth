@@ -35,6 +35,19 @@ Using our own M5StickS3 and an M5Stack RFID 2 reader, a real Indian-issued Maste
 No PIN was needed, and no bank or network was involved. The card number never left the
 reader's memory.
 
+## What works on Whitechain Sepolia (smart wallets, chain ID 1874)
+
+Every user gets a smart-contract wallet (a cheap clone) that is controlled by their bank card and their phone. The wallet, not the relayer, checks every signature.
+
+| Feature | Status | Evidence |
+|---|---|---|
+| **Smart wallet per user, card + phone multisig (2 of N)** | Deployed, source verified | Latest factory [`0x15571a05…7dcB`](https://explorer.testnet.whitechain.io/address/0x15571a053040dB029958Ee5527B72652964E7dcB?tab=txs) |
+| **More cards, 2 of 3 and 3 of 3, daily and per-payment limits, card-only tiny payments, freeze** | Tested live on the latest factory | Live smoke test `contracts/scripts/smokeV2.js`: 36 of 36 checks |
+| **Receive USDT** | Done with the track USDT | 0.2 USDT and 0.1 USDT arrived in a real wallet: [tx 1](https://explorer.testnet.whitechain.io/tx/0x38328f5a536c14063e6cf9a3a202f0febc4359e6b97b00e132bcba17d12248d8), [tx 2](https://explorer.testnet.whitechain.io/tx/0xe0855dc48cd9b18c596bb3068a7975390eeeed133aae41db510785e3a72a6650). The app shows them under Activity as "Received". |
+| **Send USDT to any address, card + fingerprint** | Done with a real bank card and a real phone, with the track USDT | 0.3 USDT sent from a smart wallet: [tx](https://explorer.testnet.whitechain.io/tx/0x31945fb2ff21ecd3f123011690a0481a6f8fcf0f0a46db9fb27fd2a84e7d2eea). That wallet came from the earlier v2 factory (`0xFB39…5A61`). On the latest factory, Send passes the relayer test (37 of 37 on Whitechain, with a throwaway token). |
+| **Lost-phone recovery with two cards** | Contract tested live; relayer tested locally; app screens built | Latest factory, smoke test section 9: one card refused, two cards start it with no phone signature, it cannot finish before the delay, then the old phone is rejected and the new phone pays. Relayer: 54 of 54 on a local chain. The app's "I already have a wallet" flow has not yet been tried on a phone. |
+
+
 ## Deployed on Whitechain Sepolia (chain ID 1874)
 
 Explorer: https://explorer.testnet.whitechain.io · RPC: `https://rpc.testnet.whitechain.io`
@@ -136,7 +149,7 @@ Not covered yet: it does not check that a new card's key comes from a real bank 
 
 **How the relayer gets its coin:** on testnet from the Whitechain faucet (WBT). One full flow (sign up, pay, change limits, add a card, freeze, unfreeze) cost about 0.0148 WBT on Whitechain Sepolia.
 
-**Verified:** the end-to-end test passed 29 of 29 against a local chain and against Whitechain Sepolia (through the relayer, with a throwaway test token); with Send added it is 37 of 37 on a local chain and on Whitechain Sepolia against the latest factory. On a real Android phone (Galaxy A52s) with a real bank card, signing up and sending money to another address worked end to end against a local chain. Not yet verified: a run with the real track USDT (we have none yet), the real-card flow on Whitechain Sepolia, and the terminal hardware against this relayer.
+**Verified:** the relayer end-to-end test passes 37 of 37 on Whitechain Sepolia against the latest factory (throwaway test token), and 54 of 54 on a local chain with the recovery steps added. On a real Android phone (Galaxy A52s) with a real bank card, signing up, adding a second card, receiving the track USDT and sending 0.3 USDT worked on Whitechain Sepolia (earlier v2 factory). Not yet verified: recovery from the phone app, and the terminal hardware against this relayer.
 
 **Recover a wallet on a new phone (app and relayer):** on the first screen, "I already have a wallet". Tap two different cards of the wallet, then confirm with the fingerprint; the phone's new key is registered after the waiting period, and "Finish" then moves the wallet to this phone. The relayer endpoints are `/api/recover/start`, `/api/recover/:id`, `/api/recover/status/:wallet` and `/api/recover/finish`. The old phone, if it still works, sees a warning on Home and can cancel with its fingerprint (`/api/recovery-cancel/*`). It needs a wallet with at least two cards. The relayer end-to-end test covers it (54 checks).
 
@@ -147,7 +160,7 @@ Not covered yet: it does not check that a new card's key comes from a real bank 
 **For the app and terminal:** small card-only payments are paid right after the card tap with no phone prompt, so the terminal needs no change. Its on-screen text still says "tUSDC".
 
 Status and limits:
-- A real payment in the track USDT (`0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7`) has **not** been made yet. That token can only be minted by its owner, so we need test USDT from the organisers. The relayer and app still point at our own `TestUSDC`, which does not count for the track.
+- A real transaction in the track USDT (`0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7`) has been made: 0.2 and 0.1 USDT received and 0.3 USDT sent by a smart wallet (links in the table at the top). That token can only be minted by its owner, so the relayer's built-in `TestUSDC` faucet is used only for local tests and smoke tests. Run the relayer with `TOKEN_ADDRESS` set to use the track USDT.
 - The smoke-test wallet uses a generated fake card, not a real bank card.
 
 Deploy it yourself (needs a funded key in `relayer/.env`, git-ignored; see `WALLETS.md`):
