@@ -420,8 +420,13 @@ function SmallScreen({ w, onBack, secure }) {
 
 function AddCardScreen({ wallet, onBack, refresh, say }) {
   const [name, setName] = useState("");
-  const [stage, setStage] = useState("intro"); // intro | tap1 | tap2 | sign
+  const [stage, setStage] = useState("intro"); // intro | tap1 | mid | tap2 | sign
+  const [hint, setHint] = useState("");
+  const resume = useRef(null);
+  const aborted = useRef(false);
+  const stop = () => { aborted.current = true; cancelCard(); resume.current?.(); setStage("intro"); };
   async function start() {
+    aborted.current = false;
     try {
       let st;
       setStage("tap1");
@@ -429,8 +434,25 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
         st = await api("/api/action/start", { wallet, action: "addCard", params: { name: name.trim() || "New card", cardModulus: key.modulus, cardExponent: key.exponent } });
         return st.challenge;
       });
+      // Pause here so the new card can be taken away before the second read starts listening.
+      setStage("mid");
+      await new Promise((r) => { resume.current = r; });
+      if (aborted.current) return;
       setStage("tap2");
-      const existing = await withCard(async () => st.challenge);
+      let existing;
+      for (;;) {
+        try {
+          existing = await withCard(async (key) => {
+            if (key.modulus === fresh.modulus) throw new Error("SAME_CARD");
+            return st.challenge;
+          });
+          break;
+        } catch (e) {
+          if (!/SAME_CARD/.test(String(e?.message))) throw e;
+          setHint("That's the new card. Tap one of your current cards instead.");
+        }
+      }
+      setHint("");
       setStage("sign");
       const phoneSig = await signWithPhone(st.hash, "Add a card", name.trim() || "New card");
       await api("/api/action/" + st.id, { cardModulus: existing.modulus, cardSig: existing.signature, newCardSig: fresh.signature, phoneSig });
@@ -438,7 +460,9 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
       say("Card added");
       onBack();
     } catch (e) {
+      if (aborted.current) return;
       say(explain(e), true);
+      setHint("");
       setStage("intro");
     }
   }
@@ -454,14 +478,16 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
       </ScrollView>
     );
   }
-  const at = stage === "tap1" ? 1 : stage === "tap2" ? 2 : 3;
+  const at = stage === "tap1" ? 1 : stage === "mid" || stage === "tap2" ? 2 : 3;
   return (
     <View style={s.center}>
       <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
-      {stage === "sign" ? <ActivityIndicator size="large" color={C.blue} /> : <ScanArt />}
-      <Text style={s.h2}>{stage === "tap1" ? "Tap the new card" : stage === "tap2" ? "Now tap one of your current cards" : "Confirm it's you"}</Text>
-      <Text style={s.lede}>{stage === "tap1" ? "Hold the card you want to add to the back of the phone. We don't store the card number." : stage === "tap2" ? "One of your existing cards must agree to the new one." : "Use your fingerprint when asked."}</Text>
-      {stage !== "sign" && <Button kind="ghost" title="Cancel" onPress={() => { cancelCard(); setStage("intro"); }} />}
+      {stage === "sign" ? <ActivityIndicator size="large" color={C.blue} /> : stage === "mid" ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View> : <ScanArt />}
+      <Text style={s.h2}>{stage === "tap1" ? "Tap the new card" : stage === "mid" ? "New card read" : stage === "tap2" ? "Now tap one of your current cards" : "Confirm it's you"}</Text>
+      <Text style={s.lede}>{stage === "tap1" ? "Hold the card you want to add to the back of the phone. We don't store the card number." : stage === "mid" ? "Take it away from the phone. Then tap Continue and hold one of your current cards to the phone." : stage === "tap2" ? "One of your existing cards must agree to the new one." : "Use your fingerprint when asked."}</Text>
+      {!!hint && stage === "tap2" && <Text style={[s.fieldErr, { textAlign: "center", marginBottom: 8 }]}>{hint}</Text>}
+      {stage === "mid" && <View style={{ alignSelf: "stretch" }}><Button big title="Continue" onPress={() => resume.current?.()} /></View>}
+      {stage !== "sign" && <Button kind="ghost" title="Cancel" onPress={stop} />}
     </View>
   );
 }

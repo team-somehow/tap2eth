@@ -155,7 +155,8 @@ export async function withCard(getChallenge) {
     const signature = challenge ? await cardSign(challenge) : null;
     return { ...key, signature };
   } finally {
-    NfcManager.cancelTechnologyRequest().catch(() => {});
+    // Awaited, so a second tap right after this one can't have its new request cancelled by this cleanup.
+    await NfcManager.cancelTechnologyRequest().catch(() => {});
   }
 }
 
