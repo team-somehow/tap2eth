@@ -2,10 +2,7 @@
 // Signatures are packaged in WebAuthn format (authenticatorData + clientDataJSON), which is what
 // the wallet contract verifies — the same format a browser passkey produces.
 import { sha256 } from "@noble/hashes/sha2.js";
-import { DEMO, demoPhone } from "./demo";
-
-// In demo mode (Expo Go, no native module) the real Keystore module can't load, so only require it when present.
-const Keystore = DEMO ? null : require("../modules/keystore-signer/src/KeystoreSignerModule").default;
+import Keystore from "../modules/keystore-signer/src/KeystoreSignerModule";
 
 const ALIAS = "tap2eth-phone-key";
 const P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
@@ -15,13 +12,12 @@ const b64ToBytes = (b) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
 const bytesToB64 = (u) => btoa(String.fromCharCode(...u));
 const b64url = (u) => bytesToB64(u).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-export const phoneKeyExists = () => (DEMO ? true : Keystore.hasKey(ALIAS));
-export const forgetPhoneKey = () => (DEMO ? undefined : Keystore.deleteKey(ALIAS));
-export const biometricsReady = () => (DEMO ? true : Keystore.biometricsAvailable());
+export const phoneKeyExists = () => Keystore.hasKey(ALIAS);
+export const forgetPhoneKey = () => Keystore.deleteKey(ALIAS);
+export const biometricsReady = () => Keystore.biometricsAvailable();
 
 /** Creates (or reuses) the phone key; returns its public point. */
 export function createPhoneKey() {
-  if (DEMO) return demoPhone.createKey();
   const spki = b64ToBytes(Keystore.generateKey(ALIAS)); // ... 04 || X || Y
   const xy = spki.subarray(spki.length - 64);
   return { phoneX: "0x" + hex(xy.subarray(0, 32)), phoneY: "0x" + hex(xy.subarray(32)) };
@@ -29,7 +25,6 @@ export function createPhoneKey() {
 
 /** Fingerprint, then sign the 32-byte hash. Returns the struct the contract's verifyPhone expects. */
 export async function signWithPhone(hashHex, title, subtitle) {
-  if (DEMO) return demoPhone.sign(hashHex);
   const rpIdHash = sha256(new TextEncoder().encode("tap2eth.app"));
   const authenticatorData = new Uint8Array([...rpIdHash, 0x05, 0, 0, 0, 0]); // flags: user present + verified
   const clientDataJSON = JSON.stringify({ type: "webauthn.get", challenge: b64url(fromHex(hashHex)), origin: "android:app:tap2eth" });
