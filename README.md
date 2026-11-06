@@ -104,7 +104,7 @@ The relayer is the small server between the merchant terminal, the phone app and
 ```bash
 cd relayer && npm install
 npm run start:v2          # reads relayer/.env: RELAYER_KEY, RPC_URL (and optionally TOKEN_ADDRESS)
-npm run e2e:v2            # plays app + terminal + card + phone over HTTP (29 checks)
+npm run e2e:v2            # plays app + terminal + card + phone over HTTP (37 checks)
 ```
 
 | Setting (env) | Meaning |
@@ -127,7 +127,11 @@ Not covered yet: it does not check that a new card's key comes from a real bank 
 
 **How the relayer gets its coin:** on testnet from the Whitechain faucet (WBT). One full flow (sign up, pay, change limits, add a card, freeze, unfreeze) cost about 0.0148 WBT on Whitechain Sepolia.
 
-**Verified:** the end-to-end test passed 29 of 29 against a local chain and against Whitechain Sepolia (through the relayer, with a throwaway test token). Not yet verified: a run with the real track USDT (we have none yet), the phone app talking to this relayer on a real phone, and the terminal hardware against it.
+**Verified:** the end-to-end test passed 29 of 29 against a local chain and against Whitechain Sepolia (through the relayer, with a throwaway test token); with Send added it is 37 of 37 on the local chain. On a real Android phone (Galaxy A52s) with a real bank card, signing up and sending money to another address worked end to end against a local chain. Not yet verified: a run with the real track USDT (we have none yet), the real-card flow on Whitechain Sepolia, and the terminal hardware against this relayer.
+
+**Send and Receive (app):** the owner can pay any address, not only a shop. In the app: scan a QR code or paste an address, enter an amount, review it, tap the card on the back of the phone, confirm with the fingerprint. The contract needs no change, because `pay` already takes any recipient and the recipient is inside the hash the phone signs. The relayer endpoint is `POST /api/send/start`, followed by `/api/pay/:id/card` and `/api/pay/:id/phone`. A send always needs the phone's fingerprint, never the card-only shortcut. Receive shows the wallet address as a QR code with copy and share. The app checks the address format and its checksum, warns on a first-time recipient, and refuses amounts over the balance or the limits before the card is tapped.
+
+**Phone key and fingerprints:** the phone's signing key no longer becomes invalid when a fingerprint is added or removed (`setInvalidatedByBiometricEnrollment(false)`). With the old setting, enrolling a new fingerprint permanently killed the key, and recovery needs a phone signature. The key still needs a strong biometric for every signature.
 
 **For the app and terminal:** small card-only payments are paid right after the card tap with no phone prompt, so the terminal needs no change. Its on-screen text still says "tUSDC".
 
