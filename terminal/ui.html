@@ -423,6 +423,7 @@
     const d = String(s.detail || "");
     if (/OverLimit/.test(d)) return "Over the customer's spending limit.";
     if (/IsFrozen/.test(d)) return "The customer's wallet is frozen.";
+    if (/InsufficientBalance/.test(d)) return "Not enough money in the customer's wallet.";
     if (/rejected/.test(d)) return "The customer declined on their phone.";
     if (/not registered/.test(d)) return "This card isn't linked to a Tap2ETH wallet yet.";
     if (/Expired/.test(d)) return "The request timed out. Start a new bill.";

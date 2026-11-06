@@ -32,6 +32,7 @@ import urllib.request
 import serial
 
 from buzzer import DEFAULT_VOLUME, KINDS, SilentBuzzer, make_buzzer
+from chain import DEFAULT_RPC, Declined, Edge, EdgeDown
 from melodies import KEY_NOTES, cue_for
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +44,9 @@ VOLUME_FILE = os.path.expanduser("~/.tap2eth-volume")
 # sudo or a restart. Best as the laptop's network name (http://<name>.local:8787): it survives IP changes.
 RELAYER_FILE = os.path.expanduser("~/.tap2eth-relayer")
 OFFLINE = "Can't reach the payment server. Check the terminal's Wi-Fi."
+NGROK_HEADER = {"ngrok-skip-browser-warning": "1"}  # ngrok's free plan may otherwise answer with a warning page
+# The chain RPC the terminal reads directly (see chain.py). Public data only; set by ./pi.sh url.
+RPC_FILE = os.path.expanduser("~/.tap2eth-rpc")
 
 
 def load_level(default_percent):
@@ -164,6 +168,7 @@ class Terminal:
         self.lock = threading.Lock()
         self.sig_event = threading.Event()
         self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None, "volume": level, "online": None}
+        self.edge, self.edge_tried = None, 0  # the terminal's own chain checks (chain.py), once the relayer gives us its config
         self._reset_tap()
 
     def set_volume(self, level):
@@ -212,7 +217,7 @@ class Terminal:
         """Check every few seconds that the relayer answers, so the screen can warn before a payment fails."""
         while True:
             try:
-                urllib.request.urlopen(self.relayer_url() + "/", timeout=4)
+                urllib.request.urlopen(urllib.request.Request(self.relayer_url() + "/", headers=NGROK_HEADER), timeout=4)
                 online = True
             except urllib.error.HTTPError:
                 online = True  # it answered, just not with a page
@@ -220,16 +225,37 @@ class Terminal:
                 online = False
             with self.lock:
                 self.state["online"] = online
+            if online and self.edge is None and time.monotonic() - self.edge_tried > 60:
+                self.setup_edge()
             time.sleep(5)
+
+    def setup_edge(self):
+        """Read the chain ourselves for each tap. Without it (old relayer, chain down) payments use the relayer's checks."""
+        self.edge_tried = time.monotonic()
+        try:
+            cfg = self.post("/api/terminal/config")
+            try:
+                rpc = open(RPC_FILE).read().strip() or DEFAULT_RPC
+            except OSError:
+                rpc = DEFAULT_RPC
+            self.edge = Edge(rpc, cfg)
+            print(f"terminal checks payments itself on chain {cfg['chainId']} via {rpc.split('/')[2]}", flush=True)
+        except Exception as e:  # noqa: BLE001 - an old relayer has no /api/terminal/config; that's fine
+            self.edge = None
+            print(f"terminal-side checks off, using the relayer's: {e}", flush=True)
 
     def post(self, path, body=None):
         req = urllib.request.Request(self.relayer_url() + path, data=json.dumps(body or {}).encode() if body is not None else None,
-                                     headers={"content-type": "application/json"}, method="POST" if body is not None else "GET")
+                                     headers={"content-type": "application/json", **NGROK_HEADER}, method="POST" if body is not None else "GET")
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
-            raise RuntimeError(json.loads(e.read()).get("error", str(e)))
+            try:
+                msg = json.loads(e.read()).get("error")
+            except ValueError:  # not our API: a 404 page, or the tunnel's own error page
+                msg = None
+            raise RuntimeError(msg or f"The payment server answered {e.code}.")
         except (urllib.error.URLError, OSError) as e:
             print(f"relayer unreachable at {self.relayer_url()}: {e}", flush=True)
             raise RuntimeError(OFFLINE)
@@ -305,6 +331,33 @@ class Terminal:
                 if self.state["mode"] != "idle" and self.state["ok"] is None:
                     self.set(detail="Card read failed — tap again")
 
+    def _sign_timed(self, chal, t_read):
+        """Have the card sign. Logs how long it sat idle in the field first (the terminal's chain checks run then)."""
+        print(f"card idle {int((time.monotonic() - t_read) * 1000)} ms before signing", flush=True)
+        return self.reader.internal_authenticate(chal)
+
+    def pay_with_edge(self, modulus, sign):
+        """Check the payment on chain here, have the card sign our hash, and hand both to the relayer in one call.
+        Returns the payment id, or None to fall back to the relayer's checks. Raises Declined to stop the payment."""
+        edge = self.edge
+        if edge is None:
+            return None
+        try:
+            pre = edge.prepare(modulus, self.state["amount"])
+        except EdgeDown as e:
+            print(f"terminal-side checks unavailable, using the relayer's: {e}", flush=True)
+            return None
+        print(f"terminal checks passed in {pre['ms']} ms", flush=True)
+        sig = sign(pre["challenge"]).hex()
+        try:
+            r = self.post("/api/pay/tapped", {"cardModulus": modulus.hex(), "cardId": pre["cardId"], "amount": self.state["amount"],
+                                              "nonce": pre["nonce"], "expiry": pre["expiry"], "hash": pre["hash"], "cardSig": sig})
+        except RuntimeError as e:
+            if "didn't match" in str(e) or "Stale" in str(e):
+                self.edge = None  # the relayer's settings may have changed: fetch them again before the next tap
+            raise
+        return r["id"]
+
     def _serial_sign(self, chal):
         self.write("CHAL " + chal)
         if not self.sig_event.wait(6) or not self.ia:
@@ -322,18 +375,19 @@ class Terminal:
                 time.sleep(0.05)
                 continue
             # Retry straight away while the card is still on the reader: no need to lift and re-tap.
+            t_seen = time.monotonic()
             for attempt in range(5):
                 self.set(detail="Reading card… hold it still" if attempt == 0 else "Almost… keep holding")
                 try:
                     card = self.reader.read_card()
                     self.aid, self.gpo, self.recs = card["aid"], card["gpo"], card["recs"]
                     t_read = time.monotonic()
-                    self.on_card(self.reader.internal_authenticate)
+                    self.on_card(lambda c: self._sign_timed(c, t_read))
                     print(f"card handled in attempt {attempt + 1}", flush=True)
                     break
                 except (CardError, OSError) as e:
                     err = e
-                    print(f"read attempt {attempt + 1} failed: {e}", flush=True)
+                    print(f"read attempt {attempt + 1} failed: {e}  (card seen {int((time.monotonic() - t_seen) * 1000)} ms ago)", flush=True)
                     self.reader.release()
                     self.reader.init()  # full chip reset so a stuck card can be woken again
                     if not self.reader.card_present(reset=True):
@@ -355,18 +409,19 @@ class Terminal:
             self.set(detail="Reading card…")
             modulus, exponent = card_public_key(self.aid, self.gpo, self.recs)
             self.sig_event = threading.Event()
-            if mode == "pay":
-                r = self.post("/api/pay/start", {"cardModulus": modulus.hex(), "amount": self.state["amount"]})
-                pay_id, chal = r["id"], r["challenge"]
-            else:
-                chal = self.post(f"/api/register/{self.state['code']}/challenge")["challenge"]
-            sig = sign(chal).hex()
             if mode == "register":
+                chal = self.post(f"/api/register/{self.state['code']}/challenge")["challenge"]
+                sig = sign(chal).hex()
                 self.set(detail="Creating wallet…")
                 w = self.post(f"/api/register/{self.state['code']}/card", {"cardModulus": modulus.hex(), "cardExponent": exponent.hex(), "cardSig": sig})
                 self.set(mode="done", screen="Card registered ✓", detail=f"Wallet {w['wallet'][:10]}…", ok=True)
                 return
-            self.post(f"/api/pay/{pay_id}/card", {"cardSig": sig})
+            pay_id = self.pay_with_edge(modulus, sign)
+            if pay_id is None:  # the relayer does the checks and builds the hash (two round trips)
+                r = self.post("/api/pay/start", {"cardModulus": modulus.hex(), "amount": self.state["amount"]})
+                pay_id = r["id"]
+                sig = sign(r["challenge"]).hex()
+                self.post(f"/api/pay/{pay_id}/card", {"cardSig": sig})
             self.set(mode="waiting", detail="Card ✓ — approve on your phone…")
             lost = 0
             while True:
@@ -398,7 +453,7 @@ class Terminal:
                 raise  # card hiccup while signing: let run_i2c retry while the card is still there
             self.write("SKIP")
             if self.state["mode"] in ("pay", "register", "waiting"):
-                if "tap again" in str(e):
+                if "tap again" in str(e).lower():
                     self.set(detail=f"{e}")
                 else:
                     self.set(mode="done", screen="Declined ✗", detail=f"{e}", ok=False)

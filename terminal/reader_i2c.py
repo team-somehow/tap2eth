@@ -95,6 +95,8 @@ class I2CReader:
         fcntl.ioctl(self.fd, I2C_SLAVE, addr)
         self.fsc, self.fwt_ms, self.bn = 32, 50, 0
         self.fsdi = 4  # frame size we accept from the card: 4 = 48 bytes, 2 = 32 bytes
+        self.step = ""  # which command is running, so a failure can say where it happened
+        self.wtx = 0    # how many "wait longer" requests the card made for the last block
         self.init()
 
     # ---------------------------------------------------------------- registers
@@ -235,9 +237,11 @@ class I2CReader:
 
     def _block(self, frame, timeout_ms):
         r = self.xfer(with_crc(frame), timeout_ms=timeout_ms)
-        for _ in range(20):  # S(WTX): the card asks for more time
+        self.wtx = 0
+        for _ in range(50):  # S(WTX): the card asks for more time (RSA signing can take a while)
             if not (r and crc_ok(r) and (r[0] & 0xF7) == 0xF2):
                 break
+            self.wtx += 1
             m = r[1] & 0x3F
             r = self.xfer(with_crc(bytes([r[0], m])), timeout_ms=self.fwt_ms * max(m, 1) + 100)
         if not r or not crc_ok(r):
@@ -256,7 +260,7 @@ class I2CReader:
                     break
                 r = self._block(bytes([0xB2 | self.bn]), to)  # R(NAK): resend
             if not r:
-                raise CardError("card moved away — hold it still")
+                raise CardError(f"card moved away — hold it still [{self.step}]")
             if more:
                 if (r[0] & 0xF6) != 0xA2:
                     raise CardError(f"card protocol error (expected R(ACK), got 0x{r[0]:02X})")
@@ -267,7 +271,7 @@ class I2CReader:
         resp = b""
         while True:  # receive, acknowledging chained blocks
             if (r[0] & 0xE2) != 0x02:
-                raise CardError(f"card protocol error (got block 0x{r[0]:02X}, len {len(r)}, bn {self.bn})")
+                raise CardError(f"card protocol error (got block 0x{r[0]:02X}, len {len(r)}, bn {self.bn}, {self.wtx} wait-extensions) [{self.step}]")
             if (r[0] & 1) == self.bn:
                 self.bn ^= 1
             resp += r[1:]
@@ -275,7 +279,7 @@ class I2CReader:
                 break
             r = self._block(bytes([0xA2 | self.bn]), to)
             if not r:
-                raise CardError("card moved away — hold it still")
+                raise CardError(f"card moved away — hold it still [{self.step}, receiving]")
         if len(resp) < 2:
             raise CardError("card protocol error")
         return resp[:-2], (resp[-2] << 8) | resp[-1]
@@ -283,16 +287,20 @@ class I2CReader:
     # ---------------------------------------------------------------- EMV
     def read_card(self):
         """Activate the card and read what's needed to rebuild its public key."""
+        self.step = "activate"
         self.activate()
+        self.step = "select PSE"
         data, sw = self.apdu(b"\x00\xA4\x04\x00\x0E2PAY.SYS.DDF01\x00")
         if sw != 0x9000:
             raise CardError("this doesn't look like a bank card")
         aid = tlv_find(data, 0x4F)
+        self.step = "select app"
         data, sw = self.apdu(bytes([0x00, 0xA4, 0x04, 0x00, len(aid)]) + aid + b"\x00")
         if sw != 0x9000:
             raise CardError("the card's payment app didn't open")
         pdol = tlv_find(data, 0x9F38)
         pd = dol_data(pdol, bytes(random.getrandbits(8) for _ in range(4))) if pdol else b""
+        self.step = "GPO"
         gpo, sw = self.apdu(bytes([0x80, 0xA8, 0x00, 0x00, len(pd) + 2, 0x83, len(pd)]) + pd + b"\x00")
         if sw != 0x9000:
             raise CardError("the card refused to start")
@@ -301,6 +309,7 @@ class I2CReader:
         for i in range(0, len(afl) - 3, 4):
             sfi = afl[i] >> 3
             for rec in range(afl[i + 1], afl[i + 2] + 1):
+                self.step = f"read record {sfi}/{rec}"
                 d, sw = self.apdu(bytes([0x00, 0xB2, rec, (sfi << 3) | 4, 0x00]))
                 if sw == 0x9000:
                     recs.append((sfi, rec, d))
@@ -309,6 +318,7 @@ class I2CReader:
     def internal_authenticate(self, challenge_hex):
         """The card signs our 4-byte challenge (EMV DDA). Returns the signature bytes."""
         # RSA signing is slow on the card: give this one command a long wait.
+        self.step = "sign"
         d, sw = self.apdu(b"\x00\x88\x00\x00\x04" + bytes.fromhex(challenge_hex) + b"\x00", timeout_ms=1500)
         if sw != 0x9000:
             raise CardError("the card refused to sign")

@@ -24,3 +24,9 @@ mobile/modules/**/android/build/
 *.apk
 *.aab
 local.properties
+
+# Local settings: backend URL, Pi host (template is .env.example)
+/.env
+mobile/.env
+mobile/.env.*
+pi/.env

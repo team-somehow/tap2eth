@@ -1,5 +1,25 @@
 # Running the Tap2ETH demo
 
+## Quick start (from the repo root)
+
+One-time: `cp .env.example .env`, then set `RELAYER_URL` / `NGROK_DOMAIN` (your static ngrok domain) and
+`TOKEN_ADDRESS`. `.env` is git-ignored.
+
+```bash
+./backend.sh        # relayer on :8787 + ngrok tunnel to RELAYER_URL (Ctrl-C stops both)
+./pi.sh url         # point the Pi terminal at RELAYER_URL (no restart needed)
+./pi.sh deploy      # after changing terminal code: copy to the Pi, restart, set the URL
+./pi.sh logs        # follow the Pi terminal's log      ./pi.sh ssh   # shell on the Pi
+./apk.sh            # build ./tap2eth.apk with RELAYER_URL built in; share it to the phones
+./apk.sh install    # same, then install on the phone connected over USB
+```
+
+The URL is built into the APK, so keep it fixed (a static ngrok domain) or rebuild and re-share after
+changing it. The Pi re-reads its URL on every request (`~/.tap2eth-relayer`); `PI_RELAYER_URL` in
+`.env` can give it a different one, such as `http://<laptop-name>.local:8787` on the same Wi-Fi.
+
+---
+
 **Verified end to end (6 Nov 2026):** wallet created on a Samsung S22 Ultra by scanning a real
 Mastercard over the phone's NFC plus fingerprint; then a 12 tUSDC payment at the M5Stick terminal
 (card tap) approved with the fingerprint, settled on-chain.

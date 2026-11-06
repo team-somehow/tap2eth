@@ -55,3 +55,17 @@ The name only works while the Pi and the laptop are on the same network. For dif
 put a tunnel URL there instead (see `RUNNING.md`).
 If the relayer can't be reached, the home screen says "Offline", and a payment already waiting on the
 customer's phone keeps checking for 90 seconds instead of being declined.
+
+## What the terminal does by itself (`terminal/chain.py`)
+
+On each tap the terminal reads the chain directly (default RPC `https://rpc.ankr.com/whitechain_testnet`;
+put another URL in `~/.tap2eth-rpc` to change it): it finds the card's wallet, checks it isn't frozen, is
+within its per-payment and daily limits and has enough balance, then builds the payment hash and has the
+card sign it. A payment that would fail is declined on the spot, before the card signs and before anything
+reaches the customer's phone. Only then does it make one call to the relayer (`POST /api/pay/tapped`)
+with the hash and the card's signature, and the relayer passes the approval to the phone.
+
+The terminal holds no keys and sends no transactions. The relayer rebuilds the hash itself with its own
+merchant and token addresses and rejects any mismatch, and the wallet contract checks everything again
+on chain, so a wrong or tampered terminal can't redirect money. If the relayer is older (no
+`/api/terminal/config`) or the chain RPC is unreachable, the terminal uses the relayer's own checks as before.

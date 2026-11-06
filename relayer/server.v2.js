@@ -242,11 +242,12 @@ async function openPayment({ cardModulus, amount, to, kind }) {
   const wallet = await factory.walletOf(ethers.keccak256(hex(cardModulus)));
   if (wallet === ethers.ZeroAddress) throw httpError(404, "card not registered");
   const w = walletAt(wallet);
-  const [frozen, threshold, softLimit, softCardOnly, perTx, daily, list] = await Promise.all([w.frozen(), w.threshold(), w.softLimit(), w.softCardOnly(), w.perTxLimit(), w.dailyLimit(), signersOf(w)]);
+  const [frozen, threshold, softLimit, softCardOnly, perTx, daily, list, balance] = await Promise.all([w.frozen(), w.threshold(), w.softLimit(), w.softCardOnly(), w.perTxLimit(), w.dailyLimit(), signersOf(w), token.balanceOf(wallet)]);
   const value = units(amount);
   if (value <= 0n) throw httpError(400, "Enter an amount above 0.");
   if (frozen) throw httpError(400, "IsFrozen");
   if (value > perTx || (await spentToday(w)) + value > daily) throw httpError(400, "OverLimit");
+  if (balance < value) throw httpError(400, "InsufficientBalance"); // fail now, not after the phone approves
   const soft = softLimit > 0n && value <= softLimit;
   if (!soft && threshold > 2n) throw httpError(400, `This wallet needs ${threshold} signatures; the terminal supports 2 for now.`);
   const cardId = cardIdOf(list, cardModulus);
@@ -266,6 +267,51 @@ async function openPayment({ cardModulus, amount, to, kind }) {
 app.post("/api/pay/start", limit("pay-start", 120, 60_000), wrap(async (req, res) => {
   const p = await openPayment({ cardModulus: req.body?.cardModulus, amount: req.body?.amount, to: MERCHANT, kind: "payment" });
   res.json({ id: p.id, challenge: p.hash.slice(2, 10), wallet: p.wallet, cardOnly: p.cardOnly });
+}));
+
+// --- terminal-side checks ("edge"): the terminal reads the chain itself, checks the payment and has the card
+// sign the hash before it calls us, so a tap costs one round trip here instead of two plus our chain reads.
+
+// Public facts the terminal needs to build the same payment hash. Nothing secret.
+app.get("/api/terminal/config", wrap(async (req, res) => {
+  res.json({ v: 2, chainId: Number(chainKey), factory: await factory.getAddress(), token: tokenAddr, decimals, merchant: MERCHANT, merchantName: MERCHANT_NAME, ttl: TTL });
+}));
+
+const walletByCard = new Map(); // keccak(card modulus) -> wallet; a card's wallet never changes
+const PAY_TAG = "TAP2ETH_V2_PAY";
+
+// The terminal already checked the wallet and got the card's signature. We don't take its word for anything:
+// the hash is rebuilt here with OUR merchant and token and the wallet's current nonce, and must match exactly.
+// The contract checks the card signature, the limits and the balance again when the payment is sent.
+app.post("/api/pay/tapped", limit("pay-start", 120, 60_000), wrap(async (req, res) => {
+  const { cardModulus, cardId, amount, nonce, expiry, hash, cardSig } = req.body || {};
+  if (!/^(0x)?[0-9a-fA-F]+$/.test(cardModulus || "") || !/^(0x)?[0-9a-fA-F]+$/.test(cardSig || "")) throw httpError(400, "bad card data");
+  if (!Number.isInteger(cardId) || cardId < 0) throw httpError(400, "bad card id");
+  const value = units(amount);
+  if (value <= 0n) throw httpError(400, "Enter an amount above 0.");
+  const key = ethers.keccak256(hex(cardModulus));
+  let wallet = walletByCard.get(key);
+  if (!wallet) {
+    wallet = await factory.walletOf(key);
+    if (wallet === ethers.ZeroAddress) throw httpError(404, "card not registered");
+    walletByCard.set(key, wallet);
+  }
+  const w = walletAt(wallet);
+  const [current, softLimit, softCardOnly, now] = await Promise.all([w.nonce(), w.softLimit(), w.softCardOnly(), chainNow()]);
+  const exp = Number(expiry);
+  if (BigInt(nonce) !== current) throw httpError(409, "Stale tap: the wallet changed. Tap again.");
+  if (!(exp > now && exp <= now + TTL + 120)) throw httpError(400, "Expired");
+  const expected = ethers.keccak256(coder.encode(["string", "uint256", "address", "address", "address", "uint256", "uint256", "uint256"],
+    [PAY_TAG, BigInt(chainKey), wallet, tokenAddr, MERCHANT, value, current, BigInt(exp)]));
+  if (expected.toLowerCase() !== String(hash).toLowerCase()) throw httpError(400, "The terminal's payment didn't match. Tap again.");
+  const soft = softLimit > 0n && value <= softLimit;
+  const p = { id: crypto.randomUUID(), kind: "payment", wallet, to: MERCHANT, amount: String(amount), value, expiry: exp, hash: expected,
+    cardId, cardOnly: soft && softCardOnly, cardSig: hex(cardSig), status: "waiting_for_card_sig", created: Date.now(), edge: true };
+  payments.set(p.id, p);
+  for (const q of payments.values()) if (q !== p && q.wallet === p.wallet && q.status === "waiting_for_phone") q.status = "superseded";
+  if (p.cardOnly) await submitPayment(p);
+  else p.status = "waiting_for_phone";
+  res.json({ ...publicPayment(p), id: p.id });
 }));
 
 // App "Send": the owner pays any address. The same phone taps the card and signs, so the app also gets the hash.

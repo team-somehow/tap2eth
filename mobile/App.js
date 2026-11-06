@@ -10,8 +10,9 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import { withCard, cancelCard } from "./lib/emv";
 import { biometricsReady, createPhoneKey, forgetPhoneKey, signWithPhone } from "./lib/phone";
 
-// The relayer runs on the laptop; `adb reverse tcp:8787 tcp:8787` makes it localhost on the phone.
-const RELAYER = "http://localhost:8787";
+// The backend URL is built into the APK from RELAYER_URL in the repo's root .env (./apk.sh passes it as
+// EXPO_PUBLIC_RELAYER_URL). Without it, a dev build reaches the laptop over USB: `adb reverse tcp:8787 tcp:8787`.
+const RELAYER = (process.env.EXPO_PUBLIC_RELAYER_URL || "http://localhost:8787").replace(/\/+$/, "");
 
 // Minimal NeoBrutalism: thin black borders, small hard shadows on things you press, one accent (yellow). Bank cards keep their own look.
 const C = { paper: "#F3F0E8", surface: "#FFFFFF", ink: "#0A0A0A", soft: "#4A4A4A", muted: "#8A8A8A", line: "#DCD8CC", yellow: "#FFE600", greenInk: "#0E7A3E", redInk: "#C4005A", card: "#14213D", cardAlt: "#2B3A67", gold: "#C9A14A" };
@@ -26,7 +27,9 @@ async function api(path, body) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 20000); // never hang for a minute on a slow network
   try {
-    const res = await fetch(RELAYER + path, { ...(body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}), signal: ctl.signal });
+    // ngrok's free plan can answer with a "visit site" page instead of the API; this header skips it.
+    const headers = { "ngrok-skip-browser-warning": "1", ...(body ? { "content-type": "application/json" } : {}) };
+    const res = await fetch(RELAYER + path, { headers, ...(body ? { method: "POST", body: JSON.stringify(body) } : {}), signal: ctl.signal });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(j.error || `Server error (${res.status})`);
     return j;
