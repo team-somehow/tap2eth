@@ -218,7 +218,16 @@
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center"><span>Wi-Fi</span><button class="plain" id="wifi-rescan" style="font-size:12px;padding:0">Scan again</button></div>
       <div class="panel" id="wifi-list"><div class="row"><span class="note">Looking for networks…</span></div></div>
       <div class="msg" id="wifi-msg"></div>
+
+      <div class="eyebrow">Power</div>
+      <div class="panel"><div class="row"><span>Turn the terminal off</span><button class="plain" id="power-off" style="color:var(--red,#C4005A);font-weight:800">Shut down</button></div></div>
     </div>
+  </section>
+
+  <!-- Shutdown: tells you when it is safe to unplug -->
+  <section class="modal" id="m-off" style="align-items:center;justify-content:center;text-align:center;gap:8px">
+    <div class="title">Shutting down…</div>
+    <div class="sub">Wait until the green light stops blinking, then unplug the power.</div>
   </section>
 
   <!-- Wi-Fi password, with an on-screen keyboard -->
@@ -347,6 +356,23 @@
     for (const b of $("wifi-list").querySelectorAll(".net")) b.onclick = () => pickNet(nets[+b.dataset.i]);
   }
   $("wifi-rescan").onclick = () => loadWifi(true);
+
+  // Shut down: first tap asks, second tap within 4 seconds does it.
+  let offArm;
+  $("power-off").onclick = async () => {
+    const b = $("power-off");
+    if (!offArm) {
+      b.textContent = "Tap again to confirm";
+      offArm = setTimeout(() => { offArm = null; b.textContent = "Shut down"; }, 4000);
+      return;
+    }
+    clearTimeout(offArm); offArm = null; b.textContent = "Shut down";
+    try {
+      const j = await (await post("/shutdown")).json();
+      if (j.error) throw new Error(j.error);
+      $("m-off").classList.add("on");
+    } catch (e) { $("wifi-msg").classList.add("err"); $("wifi-msg").textContent = e.message || "Couldn't shut down."; }
+  };
 
   let joining = null;
   function pickNet(n) {

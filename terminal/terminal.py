@@ -528,17 +528,43 @@ def wifi_scan(rescan=False):
     return {"current": current, "networks": nets}
 
 
+def _saved_profile(ssid):
+    """The name of a saved Wi-Fi profile for this network, or None."""
+    for line in nmcli(["-t", "-f", "NAME,TYPE", "connection", "show"]).splitlines():
+        f = _fields(line)
+        if len(f) >= 2 and f[0] == ssid and "wireless" in f[1]:
+            return f[0]
+    return None
+
+
 def wifi_connect(ssid, password):
     """Join a network. The password goes to nmcli only: never logged, never sent back."""
     try:
-        nmcli(["device", "wifi", "connect", ssid] + (["password", password] if password else []), timeout=45)
+        saved = _saved_profile(ssid)
+        if saved:
+            # A saved profile keeps its OLD password and `wifi connect` would reuse it, so a corrected password never
+            # took effect. Put the new one into the profile, then bring it up.
+            if password:
+                nmcli(["connection", "modify", saved, "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password], timeout=15)
+            nmcli(["connection", "up", saved], timeout=45)
+        else:
+            nmcli(["device", "wifi", "connect", ssid] + (["password", password] if password else []), timeout=45)
     except WifiError as e:
         m = str(e)
-        if re.search(r"secrets were required|802-11-wireless-security|psk", m, re.I):
+        if re.search(r"secrets were required|802-11-wireless-security|psk|4-way|handshake", m, re.I):
             raise WifiError("Wrong password. Try again.")
         if re.search(r"no network with ssid", m, re.I):
             raise WifiError("That network is out of range.")
         raise
+
+
+def shutdown_pi():
+    """Power the Pi off cleanly (the screen shows when it is safe to unplug)."""
+    try:
+        subprocess.Popen(["sudo", "-n", "systemctl", "poweroff"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
 
 
 # ------------------------------------------------------------------------------- web UI
@@ -600,6 +626,12 @@ def make_handler(term):
                 except WifiError as e:
                     return self._json({"error": str(e)}, 400)
                 return self._json({"ok": True, "current": ssid})
+            elif self.path == "/shutdown":
+                if not self._local():
+                    return self._json({"error": "Settings work on the terminal's own screen only."}, 403)
+                if not shutdown_pi():
+                    return self._json({"error": "Couldn't shut down."}, 500)
+                return self._json({"ok": True})
             elif self.path == "/key":
                 key = body.get("key")
                 if not isinstance(key, str) or key not in KEY_NOTES:
