@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Animated, Linking, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text, TextInput, Vibration, View } from "react-native";
+import { ActivityIndicator, Alert, Animated, Linking, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Switch, Text, TextInput, Vibration, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as Clipboard from "expo-clipboard";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import qrcode from "qrcode-generator";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import { withCard, cancelCard } from "./lib/emv";
 import { biometricsReady, createPhoneKey, forgetPhoneKey, signWithPhone } from "./lib/phone";
 
@@ -26,10 +29,14 @@ const MASK = "••••";
 
 function explain(e) {
   const m = String(e?.message || e);
+  if (/permanently invalidated|KeyPermanentlyInvalidated|NO_KEY/i.test(m)) return "This phone's key is no longer valid (fingerprints were changed). Remove the wallet in Cards and create it again.";
+  if (/lockout|too many attempts/i.test(m)) return "Too many wrong fingerprints. Wait 30 seconds and try again.";
+  if (/no biometric|not enrolled|hardware unavailable|BIOMETRIC_ERROR/i.test(m)) return "Fingerprint isn't available. Check that a fingerprint is set up in your phone's settings.";
   if (/cancel/i.test(m)) return "Cancelled.";
   if (m.includes("OverLimit")) return "Declined: this payment is over your spending limit.";
   if (m.includes("IsFrozen")) return "Declined: your wallet is frozen.";
   if (m.includes("Expired")) return "This request expired. Ask the merchant to charge again.";
+  if (/valid address/.test(m)) return "That address isn't valid. Check it and try again.";
   if (/Network request failed/.test(m)) return "Can't reach the Tap2ETH server.";
   if (/Tag was lost|transceive/i.test(m)) return "The card moved away. Hold it still against the phone and try again.";
   return m;
@@ -38,6 +45,12 @@ function explain(e) {
 /** One line for the activity list: who, what happened, and how to draw the amount. */
 function rowMeta(p) {
   if (p.kind === "received") return { title: "Received", sub: p.from ? `From ${p.from}` : "Money in", tone: "in" };
+  if (p.kind === "sent") {
+    const title = `Sent to ${p.merchantName}`;
+    if (p.status === "paid") return { title, sub: "Sent", tone: "out" };
+    const e = String(p.error || "");
+    return { title, sub: e.includes("OverLimit") ? "Declined: over your limit" : e.includes("IsFrozen") ? "Blocked, wallet was frozen" : "Didn't go through", tone: "dead", bad: true };
+  }
   if (p.status === "paid") return { title: p.merchantName, sub: p.cardOnly ? "Paid with card only" : "Paid", tone: "out" };
   if (p.status === "rejected") return { title: p.merchantName, sub: "You declined", tone: "dead" };
   const e = String(p.error || "");
@@ -68,6 +81,9 @@ function Icon({ name, size = 22, color = C.ink, sw = 2 }) {
       {name === "copy" && (<><Rect x="9" y="9" width="12" height="12" rx="2" {...p} /><Path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" {...p} /></>)}
       {name === "check" && <Path d="M20 6L9 17l-5-5" {...p} />}
       {name === "phone" && (<><Rect x="6" y="2" width="12" height="20" rx="3" {...p} /><Path d="M12 18h.01" {...p} /></>)}
+      {name === "up" && <Path d="M7 17L17 7M8 7h9v9" {...p} />}
+      {name === "down" && <Path d="M17 7L7 17M16 17H7V8" {...p} />}
+      {name === "scan" && <Path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3M7 12h10" {...p} />}
       {name === "clock" && (<><Circle cx="12" cy="12" r="10" {...p} /><Path d="M12 6v6l4 2" {...p} /></>)}
     </Svg>
   );
@@ -221,7 +237,7 @@ function Welcome({ onDone }) {
 
 // ------------------------------------------------------------------ tabs
 
-function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, refreshControl }) {
+function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, onSend, onReceive, refreshControl }) {
   const frozen = !!w?.frozen;
   const pct = w ? Math.min(100, (100 * Number(w.spentToday)) / Number(w.dailyLimit || 1)) : 0;
   const recent = (w?.history || []).slice(0, 5);
@@ -254,12 +270,22 @@ function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, 
         </>
       )}
 
+      <View style={s.actions}>
+        <Pressable style={({ pressed }) => [s.actionBtn, s.actionPrimary, (pressed || !w) && { opacity: 0.7 }]} disabled={!w || frozen} onPress={onSend} accessibilityLabel="Send money">
+          <Icon name="up" size={20} color="#fff" /><Text style={s.actionTxtLight}>Send</Text>
+        </Pressable>
+        <Pressable style={({ pressed }) => [s.actionBtn, s.actionSoft, pressed && { opacity: 0.7 }]} onPress={onReceive} accessibilityLabel="Receive money">
+          <Icon name="down" size={20} color={C.ink} /><Text style={s.actionTxt}>Receive</Text>
+        </Pressable>
+      </View>
+      {frozen && <Text style={[s.small, { marginTop: 8 }]}>Sending is off while the wallet is frozen. Unfreeze it in Cards.</Text>}
+
       <View style={s.sectionHead}>
         <Text style={s.sectionTitle}>Recent activity</Text>
         <Pressable onPress={goActivity} hitSlop={10}><Text style={s.link2}>See all ›</Text></Pressable>
       </View>
       <View style={s.activity}>
-        {!recent.length ? <Text style={[s.soft, { padding: 16 }]}>Tap your card at a terminal to make your first payment.</Text> : recent.map((p, i) => (
+        {!recent.length ? <Text style={[s.soft, { padding: 16 }]}>Pay at a terminal with your card, or send money to any address.</Text> : recent.map((p, i) => (
           <View key={p.id} style={i > 0 && s.actBorder}><ActivityRow p={p} hidden={hidden} onOpen={onOpen} /></View>
         ))}
       </View>
@@ -440,6 +466,229 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
   );
 }
 
+// ------------------------------------------------------------------ send and receive
+
+const ADDR_RE = /0x[a-fA-F0-9]{40}/;
+/** Pulls a wallet address out of a scanned QR or pasted text. Only a bare address or an ethereum: link counts. */
+function parseAddress(text) {
+  const t = String(text || "").trim();
+  const m = t.match(ADDR_RE);
+  if (!m) return null;
+  return t.toLowerCase() === m[0].toLowerCase() || /^ethereum:(pay-)?0x/i.test(t) ? m[0] : null;
+}
+/** Mixed-case addresses carry a checksum (EIP-55) that catches typos. All-lower or all-upper ones have none. */
+function checksumOk(a) {
+  const h = a.slice(2);
+  if (h === h.toLowerCase() || h === h.toUpperCase()) return true;
+  const hash = keccak_256(new TextEncoder().encode(h.toLowerCase()));
+  for (let i = 0; i < 40; i++) {
+    const nib = (hash[i >> 1] >> (i % 2 === 0 ? 4 : 0)) & 15;
+    const ch = h[i];
+    if (/[a-f]/i.test(ch) && (nib >= 8) !== (ch === ch.toUpperCase())) return false;
+  }
+  return true;
+}
+const shortAddr = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+/** A QR code drawn as one SVG path (no native code needed). */
+function QR({ text, size = 216 }) {
+  const qr = qrcode(0, "M");
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount();
+  const cell = size / n;
+  const c = cell.toFixed(2);
+  let d = "";
+  for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (qr.isDark(r, k)) d += `M${(k * cell).toFixed(2)} ${(r * cell).toFixed(2)}h${c}v${c}h-${c}z`;
+  return <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}><Path d={d} fill={C.ink} shapeRendering="crispEdges" /></Svg>;
+}
+
+function ReceiveScreen({ wallet, onBack, onCopy }) {
+  return (
+    <ScrollView contentContainerStyle={s.page}>
+      <Back title="Home" onPress={onBack} />
+      <Text style={s.pageTitle}>Receive</Text>
+      <Text style={s.soft}>Show this QR code, or share the address. Send only the stablecoin shown in your balance, on the Whitechain network. Other tokens and networks aren't supported and may be lost.</Text>
+      <View style={s.qrBox}><QR text={wallet} /></View>
+      <Text selectable style={s.addrFull}>{wallet}</Text>
+      <Button title="Copy address" onPress={onCopy} />
+      <Button kind="soft" title="Share address" onPress={() => Share.share({ message: wallet })} />
+      <Text style={[s.small, { marginTop: 14, textAlign: "center" }]}>Network: Whitechain Sepolia (testnet)</Text>
+    </ScrollView>
+  );
+}
+
+/** Send to any address: pick who and how much, review, tap the card, confirm with the fingerprint. */
+function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
+  const [stage, setStage] = useState("form"); // form | scan | review | tap | sign | sending | done
+  const [addr, setAddr] = useState("");
+  const [amt, setAmt] = useState("");
+  const [result, setResult] = useState(null);
+  const [perm, askPerm] = useCameraPermissions();
+  const scanLock = useRef(false);
+
+  const parsed = parseAddress(addr);
+  const addrErr = !addr.trim() ? ""
+    : !parsed ? "That doesn't look like a wallet address (0x followed by 40 characters)."
+    : !checksumOk(parsed) ? "The capital letters in this address don't match its checksum. It may be mistyped."
+    : parsed.toLowerCase() === wallet.toLowerCase() ? "That's your own wallet." : "";
+  const value = /^\d+([.,]\d{0,2})?$/.test(amt.trim()) ? Number(amt.trim().replace(",", ".")) : NaN;
+  const left = Math.max(0, Number(w.dailyLimit) - Number(w.spentToday));
+  const amtErr = !amt.trim() ? ""
+    : !(value > 0) ? "Enter an amount like 12.50."
+    : value > Number(w.balance) ? "That's more than your balance."
+    : value > Number(w.perTxLimit) ? `Over your per-payment limit of ${usd(w.perTxLimit)}. You can raise it in Cards.`
+    : value > left ? `Over what's left of today's limit (${usd(left)}).` : "";
+  const ok = !!parsed && !addrErr && value > 0 && !amtErr;
+  const recents = [...new Set((w.history || []).filter((p) => p.kind === "sent" && p.status === "paid" && p.to).map((p) => p.to))].slice(0, 3);
+  const known = !!parsed && recents.some((a) => a.toLowerCase() === parsed.toLowerCase());
+
+  async function openScan() {
+    if (!perm?.granted) {
+      const r = await askPerm();
+      if (!r.granted) { say("Allow the camera to scan a QR code, or paste the address instead.", true); return; }
+    }
+    scanLock.current = false;
+    setStage("scan");
+  }
+  function onScanned({ data }) {
+    if (scanLock.current) return;
+    scanLock.current = true;
+    const a = parseAddress(data);
+    if (!a) { say("That QR code isn't a wallet address.", true); setTimeout(() => { scanLock.current = false; }, 2500); return; }
+    Vibration.vibrate(30);
+    setAddr(a);
+    setStage("form");
+  }
+  async function paste() {
+    const t = (await Clipboard.getStringAsync()).trim();
+    if (!t) { say("Nothing copied yet."); return; }
+    setAddr(parseAddress(t) || t);
+  }
+
+  async function go() {
+    try {
+      setStage("tap");
+      let st;
+      const card = await withCard(async (key) => {
+        st = await api("/api/send/start", { cardModulus: key.modulus, amount: String(value), to: parsed });
+        if (st.wallet.toLowerCase() !== wallet.toLowerCase()) throw new Error("This card belongs to a different wallet.");
+        if (st.to.toLowerCase() !== parsed.toLowerCase()) throw new Error("The server changed the recipient. Nothing was sent.");
+        return st.challenge;
+      });
+      setStage("sign");
+      const phoneSig = await signWithPhone(st.hash, `Send ${usd(value)}`, `to ${parsed.slice(0, 8)}…${parsed.slice(-6)}`);
+      setStage("sending");
+      await api(`/api/pay/${st.id}/card`, { cardSig: card.signature });
+      const r = await api(`/api/pay/${st.id}/phone`, { phoneSig });
+      if (r.status !== "paid") throw new Error(r.error || "The payment failed.");
+      Vibration.vibrate([0, 40, 60, 40]);
+      setResult({ amount: String(value), to: parsed, txHash: r.txHash });
+      setStage("done");
+      refresh().catch(() => {});
+    } catch (e) {
+      say(explain(e), true);
+      setStage("review");
+    }
+  }
+
+  if (stage === "scan") {
+    return (
+      <View style={s.camWrap}>
+        <CameraView style={{ flex: 1 }} facing="back" barcodeScannerSettings={{ barcodeTypes: ["qr"] }} onBarcodeScanned={onScanned} />
+        <View style={s.camFrame} pointerEvents="none" />
+        <View style={s.camBar}>
+          <Text style={[s.bold, { color: "#fff", textAlign: "center", marginBottom: 8 }]}>Point the camera at the receiver's QR code</Text>
+          <Button kind="soft" title="Cancel" onPress={() => setStage("form")} />
+        </View>
+      </View>
+    );
+  }
+
+  if (stage === "tap" || stage === "sign" || stage === "sending") {
+    const at = stage === "tap" ? 1 : stage === "sign" ? 2 : 3;
+    return (
+      <View style={s.center}>
+        <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
+        {stage === "tap" ? <ScanArt /> : <ActivityIndicator size="large" color={C.blue} />}
+        <Text style={s.h2}>{stage === "tap" ? "Tap your card" : stage === "sign" ? "Confirm it's you" : "Sending…"}</Text>
+        <Text style={s.lede}>{stage === "tap" ? `Hold your bank card to the back of the phone to send ${usd(value)}. We don't store the card number.` : stage === "sign" ? "Use your fingerprint when asked." : "Your payment is being recorded on the network."}</Text>
+        {stage === "tap" && <Button kind="ghost" title="Cancel" onPress={() => { cancelCard(); setStage("review"); }} />}
+      </View>
+    );
+  }
+
+  if (stage === "done" && result) {
+    return (
+      <View style={s.center}>
+        <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View>
+        <Text style={s.paidTitle}>Sent</Text>
+        <Text style={s.sheetAmount}>{hidden ? MASK : usd(result.amount)}</Text>
+        <Text style={[s.soft, { marginTop: 2, marginBottom: 18, textAlign: "center" }]}>to {shortAddr(result.to)}</Text>
+        <View style={{ alignSelf: "stretch" }}>
+          {!!result.txHash && <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`https://explorer.testnet.whitechain.io/tx/${result.txHash}`)} />}
+          <Button big title="Done" onPress={onBack} />
+        </View>
+      </View>
+    );
+  }
+
+  if (stage === "review") {
+    return (
+      <ScrollView contentContainerStyle={s.page}>
+        <Back title="Edit" onPress={() => setStage("form")} />
+        <Text style={s.pageTitle}>Review</Text>
+        <Text style={s.soft}>You're sending</Text>
+        <Text style={s.reviewAmt}>{usd(value)}</Text>
+        <View style={[s.activity, { marginTop: 16 }]}>
+          <View style={s.detailRow}><Text style={s.small}>To</Text>
+            <Text selectable style={[s.bold, { maxWidth: "72%", textAlign: "right", fontWeight: "400" }]}>
+              <Text style={{ fontWeight: "800" }}>{parsed.slice(0, 8)}</Text>{parsed.slice(8, -6)}<Text style={{ fontWeight: "800" }}>{parsed.slice(-6)}</Text>
+            </Text>
+          </View>
+          <View style={s.detailRow}><Text style={s.small}>Network</Text><Text style={s.bold}>Whitechain Sepolia</Text></View>
+          <View style={s.detailRow}><Text style={s.small}>Approved by</Text><Text style={s.bold}>Your card + fingerprint</Text></View>
+        </View>
+        {!known && (
+          <View style={s.warn}><Text style={s.warnText}>First time sending to this address. Check the start and end match what the receiver showed you. Money sent to a wrong address can't be taken back.</Text></View>
+        )}
+        <View style={{ marginTop: 10 }}><Button big title="Tap card & confirm" onPress={go} /></View>
+      </ScrollView>
+    );
+  }
+
+  return (
+    <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
+      <Back title="Home" onPress={onBack} />
+      <Text style={s.pageTitle}>Send</Text>
+      <Text style={s.soft}>To any wallet address on Whitechain. You'll tap your card and confirm with your fingerprint.</Text>
+
+      <Text style={[s.small, { marginTop: 18 }]}>To</Text>
+      <TextInput value={addr} onChangeText={setAddr} placeholder="0x… wallet address" placeholderTextColor="#98A2B6" autoCapitalize="none" autoCorrect={false} spellCheck={false} style={[s.input, { marginBottom: 0 }]} />
+      {!!addrErr && <Text style={s.fieldErr}>{addrErr}</Text>}
+      <View style={s.fieldRow}>
+        <Pressable style={s.smallBtn} onPress={openScan}><Icon name="scan" size={18} /><Text style={s.smallBtnTxt}>Scan QR</Text></Pressable>
+        <Pressable style={s.smallBtn} onPress={paste}><Icon name="copy" size={18} /><Text style={s.smallBtnTxt}>Paste</Text></Pressable>
+      </View>
+      {!!recents.length && !addr && (
+        <>
+          <Text style={[s.small, { marginTop: 16 }]}>Recent</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+            {recents.map((a) => <Pressable key={a} style={s.recentChip} onPress={() => setAddr(a)}><Text style={s.smallBtnTxt}>{shortAddr(a)}</Text></Pressable>)}
+          </View>
+        </>
+      )}
+
+      <Text style={[s.small, { marginTop: 20 }]}>Amount (dollars)</Text>
+      <TextInput value={amt} onChangeText={setAmt} placeholder="0.00" placeholderTextColor="#98A2B6" keyboardType="decimal-pad" style={[s.input, { marginBottom: 0 }]} />
+      {!!amtErr && <Text style={s.fieldErr}>{amtErr}</Text>}
+      <Text style={[s.small, { marginTop: 6 }]}>{hidden ? "Available ••••" : `Available ${usd(w.balance)} · up to ${usd(Math.min(Number(w.perTxLimit), left))} per send today`}</Text>
+
+      <View style={{ marginTop: 14 }}><Button big title="Review" disabled={!ok} onPress={() => setStage("review")} /></View>
+    </ScrollView>
+  );
+}
+
 function SecureStatus({ busy }) {
   if (!busy) return null;
   return (
@@ -509,6 +758,7 @@ function DetailBody({ p, hidden, onClose }) {
         {line("When", when)}
         {line("Approved with", approved)}
         {p.kind === "received" && line("From", p.from)}
+        {p.kind === "sent" && line("To", p.to)}
       </View>
       {!!p.txHash && (
         <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`https://explorer.testnet.whitechain.io/tx/${p.txHash}`)} />
@@ -537,7 +787,7 @@ function TabBar({ tab, setTab }) {
 function Main({ wallet, onForget }) {
   const [w, setW] = useState(null);
   const [tab, setTab] = useState("home");
-  const [sub, setSub] = useState(null); // null | "limits" | "small" | "add"
+  const [sub, setSub] = useState(null); // null | "limits" | "small" | "add" | "send" | "receive"
   const [hidden, setHidden] = useState(false);
   const [pay, setPay] = useState(null);
   const [payBusy, setPayBusy] = useState("");
@@ -664,7 +914,9 @@ function Main({ wallet, onForget }) {
       {sub === "limits" && w ? <LimitsScreen w={w} onBack={back} secure={secure} />
         : sub === "small" && w ? <SmallScreen w={w} onBack={back} secure={secure} />
         : sub === "add" ? <AddCardScreen wallet={wallet} onBack={back} refresh={refresh} say={say} />
-        : tab === "home" ? <HomeTab w={w} wallet={wallet} hidden={hidden} toggleHidden={toggleHidden} goActivity={() => setTab("activity")} onCopy={copyAddress} onOpen={setDetail} refreshControl={refreshControl} />
+        : sub === "send" && w ? <SendScreen w={w} wallet={wallet} onBack={back} refresh={refresh} say={say} hidden={hidden} />
+        : sub === "receive" ? <ReceiveScreen wallet={wallet} onBack={back} onCopy={copyAddress} />
+        : tab === "home" ? <HomeTab w={w} wallet={wallet} hidden={hidden} toggleHidden={toggleHidden} goActivity={() => setTab("activity")} onCopy={copyAddress} onOpen={setDetail} onSend={() => goSub("send")} onReceive={() => goSub("receive")} refreshControl={refreshControl} />
         : tab === "activity" ? <ActivityTab w={w} hidden={hidden} toggleHidden={toggleHidden} onOpen={setDetail} refreshControl={refreshControl} />
         : <CardsTab w={w} openSub={goSub} setFreezeOpen={setFreezeOpen} setUnfreezeOpen={setUnfreezeOpen} onForget={onForget} />}
 
@@ -811,6 +1063,24 @@ const s = StyleSheet.create({
   warn: { backgroundColor: C.warn, borderRadius: 12, padding: 12, marginTop: 12, marginBottom: 6 },
   warnText: { fontSize: 13, lineHeight: 19, color: "#6B4E00" },
   input: { height: 52, borderRadius: 12, borderWidth: 1.5, borderColor: C.line, backgroundColor: "#fff", paddingHorizontal: 14, fontSize: 17, color: C.ink, marginTop: 6, marginBottom: 6 },
+  // send / receive
+  actions: { flexDirection: "row", gap: 12, marginTop: 20 },
+  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 14 },
+  actionPrimary: { backgroundColor: C.blue },
+  actionSoft: { backgroundColor: C.chip },
+  actionTxtLight: { color: "#fff", fontSize: 17, fontWeight: "600" },
+  actionTxt: { color: C.ink, fontSize: 17, fontWeight: "600" },
+  qrBox: { alignSelf: "center", backgroundColor: "#fff", padding: 18, borderRadius: 20, marginTop: 18, marginBottom: 16 },
+  addrFull: { fontSize: 15, color: C.ink, textAlign: "center", lineHeight: 22, letterSpacing: 0.2, marginBottom: 6 },
+  fieldRow: { flexDirection: "row", gap: 8, marginTop: 6 },
+  smallBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, height: 52, borderRadius: 12, backgroundColor: C.chip },
+  smallBtnTxt: { fontSize: 15, fontWeight: "600", color: C.ink },
+  recentChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 99, backgroundColor: C.chip, marginRight: 8, marginTop: 8 },
+  fieldErr: { color: C.red, fontSize: 13, marginTop: 4 },
+  reviewAmt: { fontSize: 54, fontWeight: "800", color: C.ink, letterSpacing: -1.4, marginTop: 8 },
+  camWrap: { flex: 1, backgroundColor: "#000" },
+  camFrame: { position: "absolute", top: "26%", alignSelf: "center", width: 250, height: 250, borderWidth: 3, borderColor: "#fff", borderRadius: 24 },
+  camBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: 24, paddingBottom: 40, backgroundColor: "rgba(0,0,0,.55)" },
   // wallet address on the card
   addrRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 },
   copyBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(255,255,255,.18)", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 99 },

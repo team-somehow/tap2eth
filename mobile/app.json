@@ -37,6 +37,12 @@
             "usesCleartextTraffic": true
           }
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Tap2ETH uses the camera to scan a wallet address QR code."
+        }
       ]
     ],
     "backgroundColor": "#EEF1F5"
