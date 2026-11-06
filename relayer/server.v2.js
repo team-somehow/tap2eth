@@ -17,13 +17,27 @@ const crypto = require("crypto");
 const { ethers } = require("ethers");
 
 const PORT = Number(process.env.PORT || 8787);
-const RPC = process.env.RPC_URL || "http://127.0.0.1:8545";
+// NETWORK picks the chain: "whitechain" (Whitechain testnet, 1874) or "arc" (Arc testnet, 5042002, gas paid in USDC).
+// Unset = whatever RPC_URL points at (local Hardhat by default).
+const NETWORKS = {
+  whitechain: { chainId: 1874, name: "Whitechain testnet", rpc: "https://rpc.testnet.whitechain.io", rpcBackups: ["https://rpc.ankr.com/whitechain_testnet"], explorer: "https://explorer.testnet.whitechain.io", symbol: "USDT", keyEnv: "RELAYER_KEY", tokenEnv: "TOKEN_ADDRESS", token: null, gasPrice: "100", batch: 10 },
+  arc: { chainId: 5042002, name: "Arc testnet", rpc: "https://rpc.testnet.arc.network", rpcBackups: ["https://rpc.testnet.arc.io"], explorer: "https://explorer.testnet.arc.io", symbol: "USDC", keyEnv: "ARC_RELAYER_KEY", tokenEnv: "ARC_TOKEN_ADDRESS", token: "0x3600000000000000000000000000000000000000", gasPrice: "200", batch: 10 },
+};
+const NETWORK = (process.env.NETWORK || "").toLowerCase();
+if (NETWORK && !NETWORKS[NETWORK]) { console.error(`NETWORK must be "whitechain" or "arc", not "${NETWORK}".`); process.exit(1); }
+const NET = NETWORKS[NETWORK] || { name: "Local chain", explorer: "", symbol: "USDC", keyEnv: "RELAYER_KEY", tokenEnv: "TOKEN_ADDRESS", gasPrice: "100" };
+const RPC = NETWORK ? (process.env[`${NETWORK.toUpperCase()}_RPC_URL`] || NET.rpc) : (process.env.RPC_URL || "http://127.0.0.1:8545");
+const NET_KEY = process.env[NET.keyEnv] || (NETWORK ? "" : process.env.RELAYER_KEY);
+const NET_TOKEN = process.env[NET.tokenEnv] || NET.token || (NETWORK ? "" : process.env.TOKEN_ADDRESS);
+// POWERED_BY=off hides the "Powered by <chain>" badge in the app and on the terminal; anything else shows it.
+const POWERED_BY = NETWORK && !/^(off|none|no|false|0)$/i.test(process.env.POWERED_BY || "on") ? { arc: "Arc", whitechain: "Whitechain" }[NETWORK] : "";
+const NET_INFO = { network: NETWORK || "local", name: NET.name, explorer: NET.explorer, symbol: NET.symbol, poweredBy: POWERED_BY };
 const IS_LOCAL = /127\.0\.0\.1|localhost/.test(RPC);
-const STATE_FILE = path.join(__dirname, "state.v2.json");
+const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, "state.v2.json");
 const ART = path.join(__dirname, "..", "contracts", "artifacts", "contracts");
 const DEPLOYMENTS = path.join(__dirname, "..", "contracts", "deployments");
 const TTL = 300; // seconds a payment or action request stays valid
-const MAX_GAS_PRICE = ethers.parseUnits(process.env.MAX_GAS_PRICE_GWEI || "100", "gwei");
+const MAX_GAS_PRICE = ethers.parseUnits(process.env.MAX_GAS_PRICE_GWEI || NET.gasPrice, "gwei");
 const DAILY_GAS_BUDGET = ethers.parseEther(process.env.DAILY_GAS_BUDGET || "0.5");
 // Where every terminal (POS) payment goes: the cafe owner's wallet. The terminal never chooses the receiver.
 // Only the address is used here; CAFE_OWNER_KEY in .env is for the owner to move the money later, never read by the server.
@@ -38,18 +52,19 @@ const SIGNUP_LIMIT = Number(process.env.SIGNUP_LIMIT || 1000);
 
 const art = (file, name) => JSON.parse(fs.readFileSync(path.join(ART, file, `${name}.json`)));
 const WalletArt = art("v2/Tap2EthV2.sol", "Tap2EthWalletV2");
-const FactoryArt = art("v2/Tap2EthV2.sol", "Tap2EthFactoryV2");
+// Tap2Eth is the single contract (registry + wallet logic). Its ABI also covers the older separate factory.
+const FactoryArt = fs.existsSync(path.join(ART, "v2/Tap2Eth.sol")) ? art("v2/Tap2Eth.sol", "Tap2Eth") : art("v2/Tap2EthV2.sol", "Tap2EthFactoryV2");
 const TokenArt = art("TestUSDC.sol", "TestUSDC");
 const walletIface = new ethers.Interface(WalletArt.abi);
 
 // batchMaxCount 1: public RPC endpoints (Ankr) reject batched requests as too large.
 const provider = new ethers.JsonRpcProvider(RPC, undefined, { batchMaxCount: 1 });
 const HARDHAT_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"; // public dev account #0
-if (!process.env.RELAYER_KEY && !IS_LOCAL) {
-  console.error("RELAYER_KEY is required on a real network (refusing to use the public Hardhat key).");
+if (!NET_KEY && !IS_LOCAL) {
+  console.error(`${NET.keyEnv} is required on a real network (refusing to use the public Hardhat key).`);
   process.exit(1);
 }
-const relayer = new ethers.NonceManager(new ethers.Wallet(process.env.RELAYER_KEY || HARDHAT_KEY, provider));
+const relayer = new ethers.NonceManager(new ethers.Wallet(NET_KEY || HARDHAT_KEY, provider));
 
 const coder = ethers.AbiCoder.defaultAbiCoder();
 const PHONE_T = "tuple(bytes authenticatorData,string clientDataJSON,uint256 challengeIndex,uint256 typeIndex,bytes32 r,bytes32 s)";
@@ -89,7 +104,7 @@ async function setup() {
   factory = new ethers.Contract(factoryAddr, FactoryArt.abi, relayer);
 
   // Token: the real stablecoin if TOKEN_ADDRESS is set, otherwise a throwaway TestUSDC (local or smoke tests only).
-  tokenAddr = process.env.TOKEN_ADDRESS;
+  tokenAddr = NET_TOKEN;
   if (tokenAddr) {
     token = new ethers.Contract(tokenAddr, ["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)", "event Transfer(address indexed from, address indexed to, uint256 value)"], relayer);
   } else {
@@ -105,7 +120,7 @@ async function setup() {
   }
   decimals = Number(await token.decimals());
   save();
-  console.log(`chain ${chainKey}  factory ${factoryAddr}  token ${tokenAddr}${giftable ? " (test token with faucet)" : ""}  relayer ${await relayer.getAddress()}`);
+  console.log(`network ${NET_INFO.name}  chain ${chainKey}  factory ${factoryAddr}  token ${tokenAddr}${giftable ? " (test token with faucet)" : ""}  relayer ${await relayer.getAddress()}`);
   console.log(`terminal payments go to the cafe owner ${MERCHANT}`);
 }
 
@@ -274,7 +289,7 @@ app.post("/api/pay/start", limit("pay-start", 120, 60_000), wrap(async (req, res
 
 // Public facts the terminal needs to build the same payment hash. Nothing secret.
 app.get("/api/terminal/config", wrap(async (req, res) => {
-  res.json({ v: 2, chainId: Number(chainKey), factory: await factory.getAddress(), token: tokenAddr, decimals, merchant: MERCHANT, merchantName: MERCHANT_NAME, ttl: TTL });
+  res.json({ v: 2, chainId: Number(chainKey), factory: await factory.getAddress(), token: tokenAddr, decimals, merchant: MERCHANT, merchantName: MERCHANT_NAME, ttl: TTL, ...NET_INFO });
 }));
 
 const walletByCard = new Map(); // keccak(card modulus) -> wallet; a card's wallet never changes
@@ -679,6 +694,7 @@ app.get("/api/wallet/:addr", wrap(async (req, res) => {
   const { cardIds, ...chain } = c.data;
   res.json({
     v2: true,
+    net: NET_INFO,
     wallet: addr,
     ...chain,
     cards: cardIds.map((id) => ({ id, name: rec.names?.[id] || `Card ${id + 1}`, active: true })),
