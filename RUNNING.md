@@ -14,6 +14,14 @@ One-time: `cp .env.example .env`, then set `RELAYER_URL` / `NGROK_DOMAIN` (your 
 ./apk.sh install    # same, then install on the phone connected over USB
 ```
 
+**Network.** `NETWORK` in `.env` picks the chain: `whitechain` (Whitechain testnet, needs `TOKEN_ADDRESS`) or
+`arc` (Arc testnet, 5042002). On Arc the token is Arc's built-in USDC and the relayer pays gas in USDC from
+`ARC_RELAYER_KEY` (in `relayer/.env`, git-ignored). The single `Tap2Eth` contract is deployed on Arc at
+`0xd7783c67607704a19018015E184fFd008392A363` (`contracts/deployments/5042002.json`). `POWERED_BY=on|off` shows or hides the "Powered by Arc/Whitechain" badge in the app and on the Pi. To switch: edit `NETWORK`,
+restart `./backend.sh`, then `./pi.sh deploy`. The app and the Pi read the network name, explorer and currency
+from the backend, so the APK needs no rebuild. Wallets live on one chain each, so phones create a new wallet on
+the new network. Arc wallets need USDC sent to them (there is no test-token faucet like on Whitechain).
+
 The URL is built into the APK, so keep it fixed (a static ngrok domain) or rebuild and re-share after
 changing it. The Pi re-reads its URL on every request (`~/.tap2eth-relayer`); `PI_RELAYER_URL` in
 `.env` can give it a different one, such as `http://<laptop-name>.local:8787` on the same Wi-Fi.

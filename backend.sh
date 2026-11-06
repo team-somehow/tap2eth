@@ -8,8 +8,16 @@ set -a; . ./.env; set +a
 export PATH="/opt/homebrew/bin:$PATH"
 PORT=8787
 
-# Without a token address the relayer would deploy a fresh test token on the live chain.
-[ -n "${TOKEN_ADDRESS:-}" ] || { echo "Set TOKEN_ADDRESS in .env first."; exit 1; }
+# NETWORK picks the chain: whitechain (Whitechain testnet) or arc (Arc testnet, gas paid in USDC).
+NETWORK="${NETWORK:-whitechain}"
+case "$NETWORK" in
+  whitechain)
+    # Without a token address the relayer would deploy a fresh test token on the live chain.
+    [ -n "${TOKEN_ADDRESS:-}" ] || { echo "Set TOKEN_ADDRESS in .env first (the Whitechain stablecoin)."; exit 1; } ;;
+  arc) ;;  # USDC at 0x3600...0000 is built in; the key is ARC_RELAYER_KEY in relayer/.env
+  *) echo "NETWORK in .env must be whitechain or arc, not '$NETWORK'."; exit 1 ;;
+esac
+export NETWORK
 if lsof -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1; then
   echo "Something already listens on port $PORT (an old backend?). Stop it, then run this again:"
   lsof -iTCP:$PORT -sTCP:LISTEN
@@ -20,8 +28,8 @@ command -v ngrok >/dev/null || { echo "ngrok isn't installed: brew install ngrok
 pids=()
 trap 'echo; echo "Stopping backend..."; kill "${pids[@]}" 2>/dev/null; wait 2>/dev/null' EXIT INT TERM
 
-echo "Starting relayer on :$PORT..."
-(cd relayer && TOKEN_ADDRESS="$TOKEN_ADDRESS" RECOVERY_DELAY="${RECOVERY_DELAY:-86400}" exec node --env-file-if-exists=.env server.v2.js) &
+echo "Starting relayer on :$PORT (network: $NETWORK)..."
+(cd relayer && TOKEN_ADDRESS="${TOKEN_ADDRESS:-}" RECOVERY_DELAY="${RECOVERY_DELAY:-86400}" exec node --env-file-if-exists=.env server.v2.js) &
 pids+=($!)
 for _ in $(seq 1 60); do
   lsof -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1 && break

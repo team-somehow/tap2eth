@@ -17,6 +17,13 @@ set_url() {
   # The terminal re-reads this file on every request; it wins over --relayer in the service.
   echo "$URL" | ssh "$HOST" 'cat > ~/.tap2eth-relayer'
   echo "Pi now uses $URL"
+  # The Pi reads the chain itself. Give it the Arc RPC from .env, or clear any old one (an RPC is chain-specific).
+  if [ "${NETWORK:-}" = arc ] && [ -n "${ARC_RPC_URL:-}" ]; then
+    echo "$ARC_RPC_URL" | ssh "$HOST" 'cat > ~/.tap2eth-rpc && chmod 600 ~/.tap2eth-rpc'
+    echo "Pi reads Arc through your ARC_RPC_URL"
+  else
+    ssh "$HOST" 'rm -f ~/.tap2eth-rpc'
+  fi
 }
 
 restart() {

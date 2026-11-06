@@ -89,6 +89,12 @@ valid signatures and false for wrong ones.
 | `Tap2EthWalletV2` (implementation) | [`0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1`](https://explorer.testnet.whitechain.io/address/0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1#code) | Yes |
 | Smoke-test wallet (fake cards, throwaway token), latest run | [`0x14d0617f1c7AEC1a848a3698045f4726BC3Fe2Ec`](https://explorer.testnet.whitechain.io/address/0x14d0617f1c7AEC1a848a3698045f4726BC3Fe2Ec) | Clone of the implementation |
 
+**Also on Arc testnet (chain ID 5042002, gas paid in USDC):** one contract, `Tap2Eth` (registry + wallet logic, wallets are clones of it),
+[`0xd7783c67607704a19018015E184fFd008392A363`](https://explorer.testnet.arc.io/address/0xd7783c67607704a19018015E184fFd008392A363?tab=contract), source verified. Token: Arc's USDC `0x3600000000000000000000000000000000000000`.
+A card + phone payment of 0.01 USDC settled there:
+[tx](https://explorer.testnet.arc.io/tx/0x7cbb741be0aa18738188bc204898fba6707c22557bcabd51e148e4d478002c8b).
+Choose the chain with `NETWORK=arc|whitechain` in `.env`. Details and how to verify: [`contracts/README.md`](contracts/README.md).
+
 The earlier v2 deployment (without phone recovery, factory `0xFB395D511b5dc33DE8488D936Ac8814166D95A61`) is kept in `contracts/deployments/1874.json` under `v2History`.
 
 **v3 (written, tested, not deployed):** `contracts/contracts/v3/Tap2EthV3.sol` makes the same phone recovery stronger. Each card signs three 4-byte pieces of the request hash (12 bytes instead of 4) and the one-piece route is switched off. Reason: a card signs only 4 bytes, and the signatures a card made earlier (for example when it was added) are public on-chain. Someone holding one stolen card could look for a recovery request whose hash starts with the same 4 bytes as an old signature of the other card (about 2^32 tries) and sign it with the stolen card, so the second card never has to be present. Only the delay and the old phone's cancel would stop that. With three pieces that replay is not realistic. This analysis has not been independently reviewed.

@@ -30,3 +30,4 @@ local.properties
 mobile/.env
 mobile/.env.*
 pi/.env
+/tap2eth.zip
