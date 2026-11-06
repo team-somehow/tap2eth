@@ -2,211 +2,106 @@
 
 **The bank card already in your wallet is your crypto wallet.**
 
-Tap2ETH turns any existing contactless Visa or Mastercard into a key for a self-custodial
-smart-contract wallet. There's no seed phrase, no new hardware and no bank partnership. You tap
-your card at a merchant terminal, approve on your phone with your fingerprint, and stablecoins
-move on-chain.
+Tap2ETH turns any contactless Visa or Mastercard into one key of a self-custodial smart-contract wallet. No seed phrase, no new hardware, no bank partnership: tap your card, confirm with your fingerprint, and stablecoins move on-chain. The card is used only as a key. No card payment is made and the bank account is never charged.
 
-Built at ETHGlobal Mumbai 2026.
+Runs on **Whitechain** testnet with USDT. Through **Uniswap v3** on Ethereum Sepolia, a wallet can also pay in ETH while the merchant receives the exact USDT amount.
 
-## The idea in one minute
+Built at ETHGlobal Mumbai 2026 by team-somehow · [tap2eth.web.app](https://tap2eth.web.app)
 
-- Every modern chip card holds a private key the bank put there, locked inside the chip. It can
-  never be read out.
-- The card will sign a random challenge for anyone who taps it (EMV "offline data
-  authentication"). The signature can be checked with the card's public key.
-- The card's public key is on the card itself, inside certificates signed by the bank, whose
-  key is signed by Mastercard or Visa. So anyone can check that it's a real bank-issued card.
-- Tap2ETH stores that public key in a smart contract wallet. Every payment needs:
-  1. **a signature from the card**, proving the physical card was tapped, and
-  2. **a signature from the owner's phone passkey** (fingerprint or face), proving the owner saw
-     and approved exactly this payment.
-- The contract checks both, plus spending limits and a freeze switch, then pays.
+## How it works
 
-## Proof it works (day 1)
+1. **The card is a signer.** A contactless bank card's chip holds an RSA key the bank put there. The key can't be read out, but the card signs a 4-byte challenge for any reader, with no PIN (EMV `INTERNAL AUTHENTICATE`). Its public key comes with a certificate chain: Visa or Mastercard → bank → card.
+2. **Sign up on the phone.** The Android app reads the card over NFC, checks that chain, and creates a wallet with two signers: the card's key and a fingerprint-locked P-256 key in the phone's secure hardware.
+3. **Pay.** At the terminal, the card signs the first 4 bytes of the payment hash. The phone shows the payment and, after your fingerprint, signs the full hash.
+4. **The wallet checks everything on-chain:** both signatures (RSA through the modexp precompile, P-256 through its precompile), the limits and the freeze switch. Then it pays. A relayer submits the transaction and pays the gas, but it can't move funds.
 
-Using our own M5StickS3 and an M5Stack RFID 2 reader, a real Indian-issued Mastercard:
+## What the wallet can do
 
-- answered the payment commands (selected the Mastercard app `A0000000041010`);
-- signed a random 4-byte challenge we chose (INTERNAL AUTHENTICATE, DDA);
-- and the signature **verified end to end**: Mastercard CA key → bank's key → card's key
-  (1024-bit RSA, exponent 3) → signature over our challenge.
+- **2 of N signers:** cards and phones, up to 8. Every normal approval needs a phone.
+- **Limits:** per payment and per day. Changing them needs the full threshold.
+- **Tiny payments with a tap alone** (optional, below a small limit).
+- **Freeze** with the phone alone. Unfreezing needs card + phone.
+- **Send and receive** from the app: scan or paste an address, tap the card, confirm with your fingerprint.
+- **Recovery:** a lost card is replaced after a time lock. A lost phone is replaced by two enrolled cards after a delay. Any signer can cancel either.
+- **Pay in ETH** (Sepolia): the wallet swaps its ETH on Uniswap v3 so the merchant gets the exact USDT amount, in one transaction. The wallet can also send and receive ETH, with its own ETH limits.
 
-No PIN was needed, and no bank or network was involved. The card number never left the
-reader's memory.
+## Live on testnet
 
-## What works on Whitechain Sepolia (smart wallets, chain ID 1874)
+| Chain | Contract | Settles in | Source |
+|---|---|---|---|
+| Whitechain testnet (1874) | `Tap2EthFactoryV2` [`0xb413…557A`](https://explorer.testnet.whitechain.io/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A#code) | Track USDT | Verified |
+| Ethereum Sepolia (11155111) | `Tap2EthFactorySwap` [`0xbE33…9a0B`](https://sepolia.etherscan.io/address/0xbE33a5f63dC26F6D0131Cf1186eDa781DB879a0B) | ETH, swapped to USDT on Uniswap v3 | Not verified yet |
 
-Every user gets a smart-contract wallet (a cheap clone) that is controlled by their bank card and their phone. The wallet, not the relayer, checks every signature.
+All addresses are in [`contracts/deployments/`](contracts/deployments/). To check them against this repo yourself, see [`contracts/README.md`](contracts/README.md).
 
-| Feature | Status | Evidence |
-|---|---|---|
-| **Smart wallet per user, card + phone multisig (2 of N)** | Deployed, source verified | Latest factory [`0xb413D6AA…557A`](https://explorer.testnet.whitechain.io/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A?tab=txs) |
-| **More cards, 2 of 3 and 3 of 3, daily and per-payment limits, card-only tiny payments, freeze** | Tested live on the latest factory | Live smoke test `contracts/scripts/smokeV2.js`: 36 of 36 checks |
-| **Receive USDT** | Done with the track USDT | 0.2 USDT and 0.1 USDT arrived in a real wallet: [tx 1](https://explorer.testnet.whitechain.io/tx/0x38328f5a536c14063e6cf9a3a202f0febc4359e6b97b00e132bcba17d12248d8), [tx 2](https://explorer.testnet.whitechain.io/tx/0xe0855dc48cd9b18c596bb3068a7975390eeeed133aae41db510785e3a72a6650). The app shows them under Activity as "Received". |
-| **Send USDT to any address, card + fingerprint** | Done with a real bank card and a real phone, with the track USDT | 0.3 USDT sent from a smart wallet: [tx](https://explorer.testnet.whitechain.io/tx/0x31945fb2ff21ecd3f123011690a0481a6f8fcf0f0a46db9fb27fd2a84e7d2eea). That wallet came from the earlier v2 factory (`0xFB39…5A61`). On the latest factory, Send passes the relayer test (37 of 37 on Whitechain, with a throwaway token). |
-| **Lost-phone recovery with two cards** | Contract tested live; relayer tested locally; app screens built | Latest factory, smoke test section 9: one card refused, two cards start it with no phone signature, it cannot finish before the delay, then the old phone is rejected and the new phone pays. Relayer: 54 of 54 on a local chain. The app's "I already have a wallet" flow has not yet been tried on a phone. |
+### Proof it works
 
+- **Day 1:** a real Indian-issued Mastercard signed our challenge, and the signature verified end to end: Mastercard CA → bank → card key (1024-bit RSA) → signature.
+- **Real card + real phone (Whitechain):** a smart wallet received [0.2](https://explorer.testnet.whitechain.io/tx/0x38328f5a536c14063e6cf9a3a202f0febc4359e6b97b00e132bcba17d12248d8) and [0.1 USDT](https://explorer.testnet.whitechain.io/tx/0xe0855dc48cd9b18c596bb3068a7975390eeeed133aae41db510785e3a72a6650), then [sent 0.3 USDT](https://explorer.testnet.whitechain.io/tx/0x31945fb2ff21ecd3f123011690a0481a6f8fcf0f0a46db9fb27fd2a84e7d2eea).
+- **Café payments (Whitechain):** [0.01](https://explorer.testnet.whitechain.io/tx/0x9238e66b4209f0dec8c81420d3ae67a58d6933fafa36a4c5d4cd155e76543e77), [0.01](https://explorer.testnet.whitechain.io/tx/0xe247de6cbb62d68009ffdf6326f112477a4fd1a75783a030031582848cef97ba) and [0.1 USDT](https://explorer.testnet.whitechain.io/tx/0xf4bf2ead31a3f49bbe51aaa9888b79abe04cf9d2adb5bf19dc2f5fabf6956e0b), each with card + phone signatures checked by the wallet.
+- **Uniswap (Sepolia):** [0.1 USDT paid](https://sepolia.etherscan.io/tx/0xd016de02bdf9d914881f24cd947f6d63574dfdc0041c5b00a132249576027fdf) from the wallet's ETH in one transaction (test card and passkey).
 
-## Deployed on Whitechain Sepolia (chain ID 1874)
+These ran on earlier deployments of the factories above; older addresses are kept under `v2History` and `swapHistory` in [`contracts/deployments/`](contracts/deployments/).
 
-Explorer: https://explorer.testnet.whitechain.io · RPC: `https://rpc.testnet.whitechain.io`
+## Repository
 
-| Contract | Address | Source verified |
-|---|---|---|
-| `Tap2EthFactory` | [`0xBeC6E6382477263f17A90145a5c569264C153A76`](https://explorer.testnet.whitechain.io/address/0xBeC6E6382477263f17A90145a5c569264C153A76#code) | Yes |
-| `Tap2EthWallet` (smoke-test instance, throwaway fake card and passkey) | [`0x664BC373618b1c37ee0DF43903Fe7C871f62A076`](https://explorer.testnet.whitechain.io/address/0x664BC373618b1c37ee0DF43903Fe7C871f62A076#code) | Yes |
-| Relayer / deployer account (pays gas) | [`0x68d076aBe0E116856C0cB60f4f58ce59ccDaA265`](https://explorer.testnet.whitechain.io/address/0x68d076aBe0E116856C0cB60f4f58ce59ccDaA265) | n/a |
-
-Transactions: [factory deploy](https://explorer.testnet.whitechain.io/tx/0xf318d50013e7cb7282bf7fcc29ae3783cf42e0aacc5f5b6ee9f4d73d7b4cb114), [wallet creation](https://explorer.testnet.whitechain.io/tx/0x107a4363e2f0da284e28d5f29d95db572bec28b8dbe1d1e0fa8424a025fcadd4).
-
-Smoke test on the live chain (`contracts/scripts/smoke.js`): the on-chain card check (RSA via the modexp
-precompile plus SHA-1) and the phone check (WebAuthn P-256 via the P-256 precompile) both return true for
-valid signatures and false for wrong ones.
-
-| Measured on Whitechain Sepolia | Gas |
+| Folder | What's inside |
 |---|---|
-| Deploy factory | 2,902,062 |
-| Create a wallet | 2,566,689 |
-| `verifyCard` (RSA + SHA-1) | 151,139 |
-| `verifyPhone` (P-256) | 62,716 |
+| [`contracts/`](contracts/) | Solidity (Hardhat): the v2 multi-signer wallet, the Uniswap swap wallet, v3 recovery (tested, not deployed) and an EIP-8141 frame-transaction experiment |
+| [`relayer/`](relayer/) | Node server between the terminal, the phone and the chain. It collects signatures, submits transactions and pays gas (`server.v2.js`) |
+| [`mobile/`](mobile/) | Android app (React Native / Expo): reads the card over NFC, fingerprint-locked key, pay, send, receive, limits, freeze, recovery |
+| [`terminal/`](terminal/) | Merchant terminal (Python, touch UI). It checks the wallet on-chain before the card signs. Runs on a Raspberry Pi with a 3.5″ screen and the RFID reader on I2C |
+| [`pi/`](pi/) | Raspberry Pi service and full-screen kiosk setup |
+| [`reader/`](reader/) | M5StickS3 card-reader firmware and the day-1 signature verifier |
+| [`landing/`](landing/) | Landing page (React, Vite, Three.js) |
+| [`docs/`](docs/) | [White paper](docs/WHITEPAPER.md), [protocol spec](docs/PROTOCOL.md) and the day-1 [spec](docs/SPEC.md) |
 
-### v2 contracts (multi-signer wallet)
+`pwa/` and `uniswap-poc/` are early prototypes.
 
-`contracts/contracts/v2/Tap2EthV2.sol`. v1 above is unchanged. v2 adds, with 37 tests (`contracts/test/Tap2EthV2.test.js`):
+## Run it
 
-- **Daily and per-payment limits** on-chain, changed only with the full threshold of signatures (card + phone).
-- **Optional 1-of-2 for small payments:** payments up to `softLimit` need one signature. By default it must be the phone; a card alone is accepted only if `softCardOnly` is switched on.
-- **More signers, still 2 of N:** add cards or phones (up to 8). Adding needs `threshold` signatures from the existing signers *and* a signature from the new key. Threshold can be raised (2 to N), signers removed (never below the threshold or the last phone).
-- **At least one phone signature on every normal approval.** A card signs only 4 bytes of the payment hash, so two cards alone are never accepted.
-- **Time-locked card recovery** instead of v1's instant phone-only swap: the phone plus the new card start a replacement that takes effect after `recoveryDelay`, and any single signer can cancel it.
-- **Lost phone, recovered with two cards:** at least two different cards and the new phone start a replacement of the phone signer with no phone signature. It takes effect after `recoveryDelay`, any single signer can cancel it, and finishing it adds the new phone and removes the old ones. Each card signs one 4-byte piece of the request, so this is the demo-strength version; see the note below.
-- **Proof of possession at creation:** the card and the phone both sign the creation parameters, so nobody can register a card they don't hold. Wallets are cheap clones.
-
-| v2 on Whitechain Sepolia (latest, with two-card phone recovery) | Address | Source verified |
-|---|---|---|
-| `Tap2EthFactoryV2` | [`0xb413D6AA35c3901Bac6D441e8f1b38640416557A`](https://explorer.testnet.whitechain.io/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A#code) | Yes |
-| `Tap2EthWalletV2` (implementation) | [`0x75572741C89B0665fB3A30473B831f0e83153b88`](https://explorer.testnet.whitechain.io/address/0x75572741C89B0665fB3A30473B831f0e83153b88#code) | Yes |
-| Smoke-test wallet (fake cards, throwaway token), latest run | [`0x14d0617f1c7AEC1a848a3698045f4726BC3Fe2Ec`](https://explorer.testnet.whitechain.io/address/0x14d0617f1c7AEC1a848a3698045f4726BC3Fe2Ec) | Clone of the implementation |
-
-**Also on Arc testnet (chain ID 5042002, gas paid in USDC):** one contract, `Tap2Eth` (registry + wallet logic, wallets are clones of it),
-[`0xd7783c67607704a19018015E184fFd008392A363`](https://explorer.testnet.arc.io/address/0xd7783c67607704a19018015E184fFd008392A363?tab=contract), source verified. Token: Arc's USDC `0x3600000000000000000000000000000000000000`.
-A card + phone payment of 0.01 USDC settled there:
-[tx](https://explorer.testnet.arc.io/tx/0x7cbb741be0aa18738188bc204898fba6707c22557bcabd51e148e4d478002c8b).
-Choose the chain with `NETWORK=arc|whitechain` in `.env`. Details and how to verify: [`contracts/README.md`](contracts/README.md).
-
-**Fresh deployment (2026-11-06 UTC, tx [`0xc2524ba1…3efd`](https://explorer.testnet.whitechain.io/tx/0xc2524ba1e0798fe95b10431d5edc7aebd59c445fe118b1488811c54dbe723efd), 5,060,414 gas).** The factory and wallet implementation above are a new deployment of the same `Tap2EthV2.sol`, so every card starts with no wallet and one card gives one new wallet. Both are source-verified. The earlier v2 factories (`0xFB395D51…5A61`, `0x15571a05…7dcB`) are kept in `contracts/deployments/1874.json` under `v2History`; wallets created on them are not known to the latest factory. The feature evidence in the table above (limits, recovery, USDT receive and send) was produced on those earlier deployments with identical contract source; it has not been re-run on the fresh one.
-
-**v3 (written, tested, not deployed):** `contracts/contracts/v3/Tap2EthV3.sol` makes the same phone recovery stronger. Each card signs three 4-byte pieces of the request hash (12 bytes instead of 4) and the one-piece route is switched off. Reason: a card signs only 4 bytes, and the signatures a card made earlier (for example when it was added) are public on-chain. Someone holding one stolen card could look for a recovery request whose hash starts with the same 4 bytes as an old signature of the other card (about 2^32 tries) and sign it with the stolen card, so the second card never has to be present. Only the delay and the old phone's cancel would stop that. With three pieces that replay is not realistic. This analysis has not been independently reviewed.
-
-Live smoke test (`contracts/scripts/smokeV2.js`, run on Whitechain Sepolia, **36 of 36 checks passed** on the latest deployment). It uses throwaway fake cards and a throwaway `TestUSDC`, not the track USDT. It covers:
-- receiving two small random deposits (1 to 5) and sending them out with card + phone
-- adding a second card (2 of 3) and paying with card 2 + phone
-- one signature refused, two cards without the phone refused
-- raising the requirement to 3 of 3 and lowering it again
-- hitting the per-payment and daily limits, then raising them with both signatures
-- card-alone payments for tiny amounts (up to 10), and 11 with the card alone refused
-- freeze with the phone alone, payments blocked while frozen, unfreeze with card + phone
-- lost phone: one card alone cannot start a replacement, two cards can without a phone signature, it cannot finish before the delay, then the old phone is rejected and the new phone with a card pays
-
-| Measured on Whitechain Sepolia | Gas |
-|---|---|
-| Deploy v2 factory (latest) | 5,060,414 |
-| Create a wallet (clone + 2 proofs) | 765,960 (v1: 2,566,689) |
-| Add a second card (2 of 3) | 555,553 |
-| `pay`, card + phone | 320,193 |
-| `pay`, card 2 + phone | 243,947 |
-| `pay`, card + card 2 + phone (3 of 3) | 379,953 |
-| `pay`, card alone (tiny amount) | 199,028 |
-| Change limits (card + phone) | 228,084 |
-| Freeze with the phone alone | 104,422 |
-| Unfreeze (card + phone) | 215,810 |
-| Start a phone replacement (2 cards, no phone) | 404,897 |
-| Finish a phone replacement | 203,115 |
-
-### v2 relayer (`relayer/server.v2.js`)
-
-The relayer is the small server between the merchant terminal, the phone app and the contract. It passes payment requests to the phone, collects the signatures, submits the transaction and pays the gas, so the customer never holds the network's coin. `server.js` (v1) is unchanged; v2 is a separate file for the v2 contracts. The old PWA is not served by v2 and is left as it was.
+One-time setup:
 
 ```bash
-cd relayer && npm install
-npm run start:v2          # reads relayer/.env: RELAYER_KEY, RPC_URL (and optionally TOKEN_ADDRESS)
-npm run e2e:v2            # plays app + terminal + card + phone over HTTP (37 checks)
+cp .env.example .env                    # then fill it in (below)
+(cd contracts && npm install && npx hardhat compile)
+(cd relayer && npm install)
+(cd mobile && npm install && npx expo prebuild -p android)
+pi/deploy.sh <relayer-url> <pi-host>    # install the terminal service and kiosk on the Pi
 ```
 
-| Setting (env) | Meaning |
-|---|---|
-| `RELAYER_KEY` | The account that pays gas. Required on a real network; the relayer refuses to start with the public Hardhat key anywhere except a local chain. |
-| `RPC_URL` | Defaults to a local chain. For Whitechain Sepolia: `https://rpc.ankr.com/whitechain_testnet`. |
-| `TOKEN_ADDRESS` | The stablecoin to use (the track USDT). If unset, it deploys a throwaway test token with a faucet. That mode does not count for the track. |
-| `FACTORY_V2` | Defaults to `factoryV2` in `contracts/deployments/<chainId>.json`. |
-| `DAILY_GAS_BUDGET`, `MAX_GAS_PRICE_GWEI` | Gas protection, below. |
-| `PER_TX_LIMIT`, `DAILY_LIMIT`, `RECOVERY_DELAY` | Starting limits for new wallets, and the waiting period (seconds, default 86400) for lost-card and lost-phone replacements. Use a short value such as 120 to try recovery on a phone. |
-| `SIGNUP_LIMIT`, `POLL_MS` | Sign-ups and recoveries per IP per hour (default 1000), and how often the relayer reads new deposits (default 10,000 ms). |
+Then:
 
-**What stops someone draining the relayer**
-1. Every call is simulated first, so a bad signature costs no gas.
-2. It only calls our own factory and wallet contracts, and they need valid card and phone signatures.
-3. Per-IP rate limits on every write endpoint. Wallet creation and recovery are allowed `SIGNUP_LIMIT` times an hour per IP (default 1000, so a hackathon demo never hits it; set it to 10 on a public deployment).
-4. A daily gas budget (default 0.5 of the native coin) and a gas price cap (default 100 gwei).
-5. It refuses to run on a real network without its own key.
-
-Not covered yet: it does not check that a new card's key comes from a real bank (the certificate chain is only checked on the phone), so someone could create many wallets with fake cards until the rate limit or budget stops them.
-
-**How the relayer gets its coin:** on testnet from the Whitechain faucet (WBT). One full flow (sign up, pay, change limits, add a card, freeze, unfreeze) cost about 0.0148 WBT on Whitechain Sepolia.
-
-**Verified:** the relayer end-to-end test passes 37 of 37 on Whitechain Sepolia against the latest factory (throwaway test token), and 54 of 54 on a local chain with the recovery steps added. On a real Android phone (Galaxy A52s) with a real bank card, signing up, adding a second card, receiving the track USDT and sending 0.3 USDT worked on Whitechain Sepolia (earlier v2 factory). Not yet verified: recovery from the phone app, and the terminal hardware against this relayer.
-
-**Recover a wallet on a new phone (app and relayer):** on the first screen, "I already have a wallet". Tap two different cards of the wallet, then confirm with the fingerprint; the phone's new key is registered after the waiting period, and "Finish" then moves the wallet to this phone. The relayer endpoints are `/api/recover/start`, `/api/recover/:id`, `/api/recover/status/:wallet` and `/api/recover/finish`. The old phone, if it still works, sees a warning on Home and can cancel with its fingerprint (`/api/recovery-cancel/*`). It needs a wallet with at least two cards. The relayer end-to-end test covers it (54 checks).
-
-**Send and Receive (app):** the owner can pay any address, not only a shop. In the app: scan a QR code or paste an address, enter an amount, review it, tap the card on the back of the phone, confirm with the fingerprint. The contract needs no change, because `pay` already takes any recipient and the recipient is inside the hash the phone signs. The relayer endpoint is `POST /api/send/start`, followed by `/api/pay/:id/card` and `/api/pay/:id/phone`. A send always needs the phone's fingerprint, never the card-only shortcut. Receive shows the wallet address as a QR code with copy and share. The app checks the address format and its checksum, warns on a first-time recipient, and refuses amounts over the balance or the limits before the card is tapped.
-
-**Phone key and fingerprints:** the phone's signing key no longer becomes invalid when a fingerprint is added or removed (`setInvalidatedByBiometricEnrollment(false)`). With the old setting, enrolling a new fingerprint permanently killed the key, and recovery needs a phone signature. The key still needs a strong biometric for every signature.
-
-**For the app and terminal:** small card-only payments are paid right after the card tap with no phone prompt, so the terminal needs no change. Its on-screen text still says "tUSDC".
-
-Status and limits:
-- A real transaction in the track USDT (`0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7`) has been made: 0.2 and 0.1 USDT received and 0.3 USDT sent by a smart wallet (links in the table at the top). That token can only be minted by its owner, so the relayer's built-in `TestUSDC` faucet is used only for local tests and smoke tests. Run the relayer with `TOKEN_ADDRESS` set to use the track USDT.
-- The smoke-test wallet uses a generated fake card, not a real bank card.
-
-Deploy it yourself (needs a funded key in `relayer/.env`, git-ignored; see `WALLETS.md`):
 ```bash
-cd contracts && npm install
-npx hardhat run scripts/deploy.js --network whitechainSepolia      # writes deployments/1874.json
-npx hardhat run scripts/smoke.js --network whitechainSepolia
-npx hardhat verify --network whitechainSepolia <factory address>
+./backend.sh both   # Whitechain and Sepolia relayers behind one ngrok URL (or ./backend.sh for one chain)
+./apk.sh install    # build the Android app with RELAYER_URL inside, install it over USB
+./pi.sh deploy      # copy the terminal code to the Pi, restart it, point it at the relayer
 ```
 
-## What we're building
+- **`.env`:** `RELAYER_URL` and `NGROK_DOMAIN` (a static ngrok domain), `TOKEN_ADDRESS` (the track USDT, `0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7`) and `DEFAULT_NETWORK` (`whitechain`).
+- **`relayer/.env`** (git-ignored): `RELAYER_KEY` (pays gas on Whitechain and Sepolia) and `CAFE_OWNER_ADDRESS`, where terminal payments go.
+- **Two chains, one URL:** with `both`, the routes are `RELAYER_URL/whitechain` and `RELAYER_URL/sepolia`; the app and the Pi pick the network in their settings.
+- Full walkthrough: [`RUNNING.md`](RUNNING.md) and [`pi/README.md`](pi/README.md).
 
-| Part | Hardware / stack | Job |
-|---|---|---|
-| **Merchant terminal** | Raspberry Pi + screen, with the M5Stick + RFID reader over USB | Merchant types the amount, customer taps the card, screen shows the status |
-| **Phone app** | Android (iPhone can't talk to payment cards) | Sign up by tapping the card, approve payments with your fingerprint, set limits, freeze |
-| **Relayer / backend** | Small server | Passes payment requests from the terminal to the phone, then submits the transaction with sponsored gas |
-| **Smart contract wallet** | Solidity, ERC-4337 account on an L2 | Holds the funds and checks the card signature, the phone signature, the limits and the freeze flag |
+### Tests
 
-See [docs/SPEC.md](docs/SPEC.md) for the full spec.
+```bash
+cd contracts && npx hardhat test   # 127 tests; the Uniswap ones fork Sepolia and are skipped offline
+cd relayer && npm run e2e:v2       # 54 checks over HTTP against a running relayer (see the script header)
+```
 
-## Why it's different
+## Security notes
 
-- **Gnosis Pay, MetaMask Card, crypto debit cards:** those issue you a *new* card through a
-  card issuer, with new KYC. Tap2ETH uses the card you already have.
-- **HaLo, Burner and other NFC crypto cards:** those need new hardware. Over a billion people
-  already carry an EMV card.
-- **zkEMV:** proves card possession in zero knowledge. Tap2ETH is a full payment wallet with
-  limits, a merchant terminal, two-factor approval and recovery.
+- A card signs only 4 bytes and has no screen, so every normal payment also needs the phone, which shows the payment and signs the full hash.
+- The bank generated the card's key. Requiring the phone means no single party (bank, thief or us) can move funds.
+- Two-card phone recovery on the deployed v2 contracts is demo-strength: each card signs one 4-byte piece. v3 has each card sign three pieces; it is written and tested, not deployed.
+- The relayer doesn't yet check that a new card's key comes from a real bank. The app checks the certificate chain.
+- Testnet only. Not audited.
 
-## Honest limits
+Details: [white paper](docs/WHITEPAPER.md) (security model, gas costs, limitations).
 
-- The card has no screen and signs for any reader within a few centimetres. That's why every
-  payment also needs the phone.
-- The bank generated the card's key, so the card alone isn't full self-custody. Requiring the
-  phone means no single party (bank, thief or us) can move funds.
-- Each card signature only covers 4 bytes of our challenge. The phone signs the full payment
-  hash.
-- A reissued card has a new key, so the wallet supports swapping in a new card.
+## Compared with
 
-## Team
-
-team-somehow
+- **Gnosis Pay, MetaMask Card:** they issue you a new card, with new KYC. Tap2ETH uses the card you already have.
+- **HaLo, Tangem:** they need new hardware. Over a billion people already carry an EMV card.
+- **zkEMV:** proves you hold a card. Tap2ETH is a full wallet with limits, a merchant terminal and recovery.
