@@ -19,6 +19,7 @@ import urllib.parse
 from decimal import Decimal, InvalidOperation
 
 DEFAULT_RPC = "https://rpc.ankr.com/whitechain_testnet"
+RPC_BY_CHAIN = {1874: "https://rpc.testnet.whitechain.io", 5042002: "https://rpc.testnet.arc.network"}  # Whitechain testnet, Arc testnet
 MAX_BATCH = 10  # Ankr refuses larger JSON-RPC batches (HTTP 413)
 KIND_CARD = 0
 

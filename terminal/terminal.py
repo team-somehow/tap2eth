@@ -32,7 +32,7 @@ import urllib.request
 import serial
 
 from buzzer import DEFAULT_VOLUME, KINDS, SilentBuzzer, make_buzzer
-from chain import DEFAULT_RPC, Declined, Edge, EdgeDown
+from chain import DEFAULT_RPC, RPC_BY_CHAIN, Declined, Edge, EdgeDown
 from melodies import KEY_NOTES, cue_for
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -167,7 +167,7 @@ class Terminal:
             self.ser.open()
         self.lock = threading.Lock()
         self.sig_event = threading.Event()
-        self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None, "volume": level, "online": None}
+        self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None, "volume": level, "online": None, "cur": "USDT", "powered": ""}
         self.edge, self.edge_tried = None, 0  # the terminal's own chain checks (chain.py), once the relayer gives us its config
         self._reset_tap()
 
@@ -198,7 +198,7 @@ class Terminal:
         ascii_ = lambda t: "".join(ch for ch in str(t or "") if 32 <= ord(ch) < 127).replace("|", "/").strip()[:26]
         l1, l2 = ascii_(s["screen"]), ascii_(s["detail"])
         if s["mode"] == "waiting":
-            l1, l2 = "Approve on phone", f"{s['amount']} USDT"
+            l1, l2 = "Approve on phone", f"{s['amount']} {s['cur']}"
         try:
             self.write(f"SHOW {color}|{l1 or 'Tap2ETH'}|{l2}")
         except Exception:  # noqa: BLE001
@@ -225,23 +225,37 @@ class Terminal:
                 online = False
             with self.lock:
                 self.state["online"] = online
-            if online and self.edge is None and time.monotonic() - self.edge_tried > 60:
-                self.setup_edge()
+            if online and time.monotonic() - self.edge_tried > 60:
+                # Retry if it never worked; and follow the backend if it was switched to another chain (NETWORK in .env).
+                if self.edge is None or self.chain_changed():
+                    self.setup_edge()
+                else:
+                    self.edge_tried = time.monotonic()
             time.sleep(5)
+
+    def chain_changed(self):
+        try:
+            cfg = self.post("/api/terminal/config")
+            return int(cfg["chainId"]) != self.edge.chain_id or cfg["factory"].lower() != self.edge.factory.lower()
+        except Exception:  # noqa: BLE001 - can't tell right now; keep what we have
+            return False
 
     def setup_edge(self):
         """Read the chain ourselves for each tap. Without it (old relayer, chain down) payments use the relayer's checks."""
         self.edge_tried = time.monotonic()
         try:
             cfg = self.post("/api/terminal/config")
+            rpc = RPC_BY_CHAIN.get(int(cfg["chainId"]), DEFAULT_RPC)  # the chain the relayer runs on
             try:
-                rpc = open(RPC_FILE).read().strip() or DEFAULT_RPC
+                rpc = open(RPC_FILE).read().strip() or rpc
             except OSError:
-                rpc = DEFAULT_RPC
+                pass
+            self.set(cur=cfg.get("symbol") or "USDT", powered=cfg.get("poweredBy") or "")
             self.edge = Edge(rpc, cfg)
             print(f"terminal checks payments itself on chain {cfg['chainId']} via {rpc.split('/')[2]}", flush=True)
         except Exception as e:  # noqa: BLE001 - an old relayer has no /api/terminal/config; that's fine
             self.edge = None
+            self.set(powered="")
             print(f"terminal-side checks off, using the relayer's: {e}", flush=True)
 
     def post(self, path, body=None):
@@ -262,7 +276,7 @@ class Terminal:
 
     # merchant actions
     def start_payment(self, amount):
-        self.set(mode="pay", amount=amount, screen=f"{amount} USDT", detail="Tap card", tx=None, ok=None, code=None)
+        self.set(mode="pay", amount=amount, screen=f"{amount} {self.state['cur']}", detail="Tap card", tx=None, ok=None, code=None)
 
     def start_register(self, code):
         self.set(mode="register", code=code, screen="Register card", detail=f"Code {code} — tap card", tx=None, ok=None, amount=None)
@@ -442,7 +456,7 @@ class Terminal:
                     lost = 0
                     self.set(detail="Card ✓ — approve on your phone…")
                 if p["status"] == "paid":
-                    self.set(mode="done", screen=f"Paid {p['amount']} USDT ✓", detail="Thank you!", tx=p.get("txHash"), ok=True)
+                    self.set(mode="done", screen=f"Paid {p['amount']} {self.state['cur']} ✓", detail="Thank you!", tx=p.get("txHash"), ok=True)
                     return
                 if p["status"] in ("failed", "rejected"):
                     self.set(mode="done", screen="Declined ✗", detail=p.get("error") or p["status"], ok=False)
