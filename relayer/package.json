@@ -4,6 +4,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
+    "start:v2": "node --env-file-if-exists=.env server.v2.js",
+    "e2e:v2": "node scripts/e2e-v2.js",
     "start:frames:local": "node --env-file=.env.frames.local server.js",
     "start:frames:public": "node --env-file=.env.frames.public server.js"
   },

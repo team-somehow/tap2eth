@@ -173,16 +173,17 @@ function Welcome({ onDone }) {
     if (!biometricsReady()) return setErr("Set up a fingerprint on this phone first (Settings → Biometrics).");
     setStep("scanning");
     try {
-      let ch;
-      const card = await withCard(async () => {
-        ch = await api("/api/signup/challenge");
-        return ch.challenge;
-      });
-      setStep("creating");
+      // The phone key comes first: the card and the phone both sign a hash that covers both keys.
       const phone = createPhoneKey();
-      // Prove the new phone key works (and that the person is present) before creating the wallet.
-      await signWithPhone("0x" + "00".repeat(32), "Create your Tap2ETH wallet", "Confirm with your fingerprint");
-      const r = await api("/api/signup", { id: ch.id, ...phone, cardModulus: card.modulus, cardExponent: card.exponent, cardSig: card.signature });
+      let st;
+      const card = await withCard(async (key) => {
+        st = await api("/api/signup/start", { ...phone, cardModulus: key.modulus, cardExponent: key.exponent });
+        return st.existing ? null : st.challenge;
+      });
+      if (st.existing) { await AsyncStorage.setItem("wallet", st.wallet); return onDone(st.wallet); }
+      setStep("creating");
+      const phoneSig = await signWithPhone(st.hash, "Create your Tap2ETH wallet", "Confirm with your fingerprint");
+      const r = await api("/api/signup/" + st.id, { cardSig: card.signature, phoneSig });
       await AsyncStorage.setItem("wallet", r.wallet);
       onDone(r.wallet);
     } catch (e) {
@@ -625,7 +626,7 @@ function Main({ wallet, onForget }) {
       });
       setBusy("unfreeze");
       const phoneSig = await signWithPhone(req.hash, "Unfreeze your wallet", "Payments will work again");
-      await api("/api/unfreeze/" + req.id, { cardSig: card.signature, phoneSig });
+      await api("/api/unfreeze/" + req.id, { cardModulus: card.modulus, cardSig: card.signature, phoneSig });
       setUnfreezeOpen(false);
       say("Wallet active again.");
     } catch (e) { say(explain(e), true); }

@@ -16,3 +16,4 @@ relayer/.env
 relayer/.env.*
 relayer/state.frames.*.json
 contracts/deployments/frames-local.json
+relayer/state.v2.json

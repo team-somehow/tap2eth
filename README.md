@@ -97,7 +97,39 @@ Live smoke test (`contracts/scripts/smokeV2.js`, run on Whitechain Sepolia, **29
 | Freeze with the phone alone | 104,422 |
 | Unfreeze (card + phone) | 215,787 |
 
-The relayer, PWA and app still use v1. Moving them to v2 is not done yet.
+### v2 relayer (`relayer/server.v2.js`)
+
+The relayer is the small server between the merchant terminal, the phone app and the contract. It passes payment requests to the phone, collects the signatures, submits the transaction and pays the gas, so the customer never holds the network's coin. `server.js` (v1) is unchanged; v2 is a separate file for the v2 contracts. The old PWA is not served by v2 and is left as it was.
+
+```bash
+cd relayer && npm install
+npm run start:v2          # reads relayer/.env: RELAYER_KEY, RPC_URL (and optionally TOKEN_ADDRESS)
+npm run e2e:v2            # plays app + terminal + card + phone over HTTP (29 checks)
+```
+
+| Setting (env) | Meaning |
+|---|---|
+| `RELAYER_KEY` | The account that pays gas. Required on a real network; the relayer refuses to start with the public Hardhat key anywhere except a local chain. |
+| `RPC_URL` | Defaults to a local chain. For Whitechain Sepolia: `https://rpc.ankr.com/whitechain_testnet`. |
+| `TOKEN_ADDRESS` | The stablecoin to use (the track USDT). If unset, it deploys a throwaway test token with a faucet. That mode does not count for the track. |
+| `FACTORY_V2` | Defaults to `factoryV2` in `contracts/deployments/<chainId>.json`. |
+| `DAILY_GAS_BUDGET`, `MAX_GAS_PRICE_GWEI` | Gas protection, below. |
+| `PER_TX_LIMIT`, `DAILY_LIMIT`, `RECOVERY_DELAY` | Starting limits and lost-card delay for new wallets. |
+
+**What stops someone draining the relayer**
+1. Every call is simulated first, so a bad signature costs no gas.
+2. It only calls our own factory and wallet contracts, and they need valid card and phone signatures.
+3. Per-IP rate limits on every write endpoint, and a tighter one on wallet creation (10 an hour).
+4. A daily gas budget (default 0.5 of the native coin) and a gas price cap (default 100 gwei).
+5. It refuses to run on a real network without its own key.
+
+Not covered yet: it does not check that a new card's key comes from a real bank (the certificate chain is only checked on the phone), so someone could create many wallets with fake cards until the rate limit or budget stops them.
+
+**How the relayer gets its coin:** on testnet from the Whitechain faucet (WBT). One full flow (sign up, pay, change limits, add a card, freeze, unfreeze) cost about 0.0148 WBT on Whitechain Sepolia.
+
+**Verified:** the end-to-end test passed 29 of 29 against a local chain and against Whitechain Sepolia (through the relayer, with a throwaway test token). Not yet verified: a run with the real track USDT (we have none yet), the phone app talking to this relayer on a real phone, and the terminal hardware against it.
+
+**For the app and terminal:** small card-only payments are paid right after the card tap with no phone prompt, so the terminal needs no change. Its on-screen text still says "tUSDC".
 
 Status and limits:
 - A real payment in the track USDT (`0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7`) has **not** been made yet. That token can only be minted by its owner, so we need test USDT from the organisers. The relayer and app still point at our own `TestUSDC`, which does not count for the track.
