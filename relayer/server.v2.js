@@ -468,7 +468,7 @@ app.post("/api/pay/tapped", limit("pay-start", 120, 60_000), wrap(async (req, re
     [PAY_TAG, BigInt(chainKey), wallet, tokenAddr, MERCHANT, value, current, BigInt(exp)]));
   if (expected.toLowerCase() !== String(hash).toLowerCase()) throw httpError(400, "The terminal's payment didn't match. Tap again.");
   const soft = softLimit > 0n && value <= softLimit;
-  const p = { id: crypto.randomUUID(), kind: "payment", wallet, to: MERCHANT, amount: String(amount), value, expiry: exp, hash: expected,
+  const p = { id: crypto.randomUUID(), kind: "payment", mode: "pay", nonce: current, symbol: NET.symbol, wallet, to: MERCHANT, amount: String(amount), value, expiry: exp, hash: expected,
     cardId, cardOnly: soft && softCardOnly, cardSig: hex(cardSig), status: "waiting_for_card_sig", created: Date.now(), edge: true };
   payments.set(p.id, p);
   for (const q of payments.values()) if (q !== p && q.wallet === p.wallet && q.status === "waiting_for_phone") q.status = "superseded";
@@ -534,16 +534,20 @@ async function submitPayment(p, phoneSig) {
     mark(p, "card", "phone"); // both signatures were accepted by the wallet's own check (the simulation above)
     // withPhone() above already simulated these exact arguments (unless the card alone approves), so send() skips doing it again.
     const rc = await send(w, method, args, { simulated: !p.cardOnly, onSent: (hash) => { p.txHash = hash; mark(p, "swap"); } });
-    mark(p, "swap", "confirm");
-    nonceFloor.set(p.wallet, p.nonce + 1n);
-    if (p.mode === "swap") { // the ETH the swap really cost, from the wallet's PaidWithSwap event
-      const ev = rc.logs.map((l) => { try { return walletIface.parseLog(l); } catch { return null; } }).find((e) => e?.name === "PaidWithSwap");
-      if (ev) p.ethPaid = ethers.formatEther(ev.args.ethIn);
-      mark(p, "receive");
-    }
+    // The transaction is confirmed: this payment is PAID. Everything below is bookkeeping, and a mistake in it must never
+    // turn a payment that went through into a failure (it did once: a missing counter made this step throw).
     p.status = "paid";
     p.txHash = rc.hash;
     p.gasUsed = rc.gasUsed.toString();
+    try {
+      mark(p, "swap", "confirm");
+      if (typeof p.nonce === "bigint") nonceFloor.set(p.wallet, p.nonce + 1n);
+      if (p.mode === "swap") { // the ETH the swap really cost, from the wallet's PaidWithSwap event
+        const ev = rc.logs.map((l) => { try { return walletIface.parseLog(l); } catch { return null; } }).find((e) => e?.name === "PaidWithSwap");
+        if (ev) p.ethPaid = ethers.formatEther(ev.args.ethIn);
+        mark(p, "receive");
+      }
+    } catch (e) { console.log("payment recorded, but its bookkeeping failed:", e.message); }
   } catch (e) {
     p.status = "failed";
     p.error = decodeError(e);
