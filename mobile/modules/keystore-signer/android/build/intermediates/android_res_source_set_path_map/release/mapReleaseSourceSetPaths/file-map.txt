@@ -1,9 +1,0 @@
-expo.modules.keystoresigner.keystore-signer-pngs-0 /Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android/build/generated/res/pngs/release
-expo.modules.keystoresigner.keystore-signer-updated_navigation_xml-1 /Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android/build/generated/updated_navigation_xml/release
-expo.modules.keystoresigner.keystore-signer-mergeReleaseResources-2 /Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android/build/intermediates/incremental/release/mergeReleaseResources/merged.dir
-expo.modules.keystoresigner.keystore-signer-mergeReleaseResources-3 /Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android/build/intermediates/incremental/release/mergeReleaseResources/stripped.dir
-expo.modules.keystoresigner.keystore-signer-release-4 /Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android/build/intermediates/merged_res/release/mergeReleaseResources
-expo.modules.keystoresigner.keystore-signer-release-5 /Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android/build/intermediates/packaged_res/release/packageReleaseResources
-expo.modules.keystoresigner.keystore-signer-main-6 /Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android/src/main/res
-expo.modules.keystoresigner.keystore-signer-release-7 /Users/pettiboy/code/team-somehow/eth-mumbai/ethglobal-mumbai/mobile/modules/keystore-signer/android/src/release/res
-gradleHome-0 /Users/pettiboy/.gradle

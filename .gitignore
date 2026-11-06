@@ -17,3 +17,10 @@ relayer/.env.*
 relayer/state.frames.*.json
 contracts/deployments/frames-local.json
 relayer/state.v2.json
+
+# Android / Gradle build output (generated)
+mobile/modules/**/android/build/
+**/.gradle/
+*.apk
+*.aab
+local.properties
