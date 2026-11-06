@@ -13,3 +13,6 @@ relayer/state.json
 relayer/scripts/.sim-card.json
 relayer/scripts/.fake-phone.json
 relayer/.env
+relayer/.env.*
+relayer/state.frames.*.json
+contracts/deployments/frames-local.json

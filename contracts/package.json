@@ -7,6 +7,7 @@
     "node": "hardhat node --hostname 0.0.0.0"
   },
   "devDependencies": {
+    "@forshtat/hegota-support": "^0.0.1",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@openzeppelin/contracts": "^5.6.1",
     "hardhat": "^2.29.1",

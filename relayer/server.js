@@ -9,7 +9,8 @@ const { ethers } = require("ethers");
 
 const PORT = Number(process.env.PORT || 8787);
 const RPC = process.env.RPC_URL || "http://127.0.0.1:8545";
-const STATE_FILE = path.join(__dirname, "state.json");
+const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, "state.json");
+const FRAME_MODE = process.env.PAYMENT_PATH === "frame";
 const ART = path.join(__dirname, "..", "contracts", "artifacts", "contracts", "Tap2EthWallet.sol");
 const PER_TX = ethers.parseUnits(process.env.PER_TX_LIMIT || "50", 6);
 const DAILY = ethers.parseUnits(process.env.DAILY_LIMIT || "200", 6);
@@ -18,7 +19,7 @@ const PAYMENT_TTL = 300; // seconds
 
 const load = (name, file = "Tap2EthWallet.sol") =>
   JSON.parse(fs.readFileSync(path.join(path.dirname(ART), file, `${name}.json`)));
-const WalletArt = load("Tap2EthWallet");
+const WalletArt = FRAME_MODE ? load("Tap2EthFrameWallet", "frames/Tap2EthFrameWallet.sol") : load("Tap2EthWallet");
 const FactoryArt = load("Tap2EthFactory");
 const TokenArt = load("TestUSDC", "TestUSDC.sol");
 
@@ -31,13 +32,41 @@ const MERCHANT = process.env.MERCHANT_ADDRESS || "0x70997970C51812dc3A010C7d01b5
 
 let state = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE)) : {};
 const save = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-let factory, token;
+let token;
+let rail; // how wallets are created and payments reach the chain: directPath() or the frame path
 
 async function setup() {
   const net = await provider.getNetwork();
   const chainKey = String(net.chainId);
   state[chainKey] ||= {};
   const s = state[chainKey];
+  rail = FRAME_MODE ? await framePath(s, Number(net.chainId)) : await directPath(s);
+  console.log(`chain ${chainKey}  path ${FRAME_MODE ? "frame" : "direct"}  token ${await token.getAddress()}  merchant ${MERCHANT}`);
+}
+
+/** Frame devnet: contracts come from scripts/deploy-frames.mjs, and payments go through the alt mempool. */
+async function framePath(s, chainId) {
+  const deployment = JSON.parse(fs.readFileSync(process.env.FRAME_DEPLOYMENT));
+  if (deployment.chainId !== chainId) throw new Error(`deployment is for chain ${deployment.chainId}, node is on ${chainId}`);
+  if (!process.env.MEMPOOL_URL || !process.env.POS_KEY) throw new Error("frame mode needs MEMPOOL_URL and POS_KEY");
+  if ((await provider.getCode(deployment.verifier)) === "0x") throw new Error("verifier not found, the devnet was probably reset: rerun scripts/deploy-frames.mjs");
+  const { createFramePath } = await import("./frames.mjs");
+  token = new ethers.Contract(deployment.token, TokenArt.abi, relayer);
+  s.wallets ||= {};
+  return createFramePath({
+    relayer, provider, walletArt: WalletArt, deployment, chainId,
+    paymasterAbi: load("QuotaPaymaster", "frames/QuotaPaymaster.sol").abi,
+    rpcUrl: RPC, mempoolUrl: process.env.MEMPOOL_URL, explorerUrl: process.env.EXPLORER_URL, posKey: process.env.POS_KEY,
+    limits: { perTx: PER_TX, daily: DAILY },
+    walletIndex: {
+      get: (key) => s.wallets[key],
+      set: (key, wallet) => { s.wallets[key] = wallet; save(); },
+    },
+  });
+}
+
+/** Whitechain and local Hardhat: the factory creates wallets, and the relayer's account calls pay() and pays the gas. */
+async function directPath(s) {
   const hasCode = async (a) => a && (await provider.getCode(a)) !== "0x";
   if (!(await hasCode(s.factory))) {
     const f = await new ethers.ContractFactory(FactoryArt.abi, FactoryArt.bytecode, relayer).deploy();
@@ -48,9 +77,25 @@ async function setup() {
     s.token = await t.getAddress();
   }
   save();
-  factory = new ethers.Contract(s.factory, FactoryArt.abi, relayer);
+  const factory = new ethers.Contract(s.factory, FactoryArt.abi, relayer);
   token = new ethers.Contract(s.token, TokenArt.abi, relayer);
-  console.log(`chain ${chainKey}  factory ${s.factory}  token ${s.token}  merchant ${MERCHANT}`);
+  return {
+    txOverrides: {},
+    async findWallet(key) {
+      const wallet = await factory.walletOf(key);
+      return wallet === ethers.ZeroAddress ? null : wallet;
+    },
+    async createWallet({ key, cardModulus, cardExponent, phoneX, phoneY }) {
+      await (await factory.createWallet(cardModulus, cardExponent, phoneX, phoneY, PER_TX, DAILY)).wait();
+      return factory.walletOf(key);
+    },
+    async pay(p, phoneSig, { token: tokenAddress, merchant }) {
+      const tx = await walletAt(p.wallet).pay(tokenAddress, merchant, p.value, p.expiry, p.cardSig, phoneSig);
+      const rc = await tx.wait();
+      return { txHash: rc.hash, gasUsed: rc.gasUsed.toString() };
+    },
+    explorerLink: () => undefined,
+  };
 }
 
 // An idle local chain's last block can be hours old; the next block uses the real clock.
@@ -103,11 +148,10 @@ app.post("/api/register/:code/card", async (req, res) => {
   try {
     if (!verifyCardSig(cardModulus, cardExponent, r.challenge, cardSig)) throw new Error("card signature invalid");
     const key = ethers.keccak256(hex(cardModulus));
-    if ((await factory.walletOf(key)) !== ethers.ZeroAddress) throw new Error("this card already has a wallet");
+    if (await rail.findWallet(key)) throw new Error("this card already has a wallet");
     r.status = "creating_wallet";
-    await (await factory.createWallet(hex(cardModulus), hex(cardExponent), r.phoneX, r.phoneY, PER_TX, DAILY)).wait();
-    r.wallet = await factory.walletOf(key);
-    await (await token.faucet(r.wallet, SIGNUP_GIFT)).wait();
+    r.wallet = await rail.createWallet({ key, cardModulus: hex(cardModulus), cardExponent: hex(cardExponent), phoneX: r.phoneX, phoneY: r.phoneY });
+    await (await token.faucet(r.wallet, SIGNUP_GIFT, rail.txOverrides)).wait();
     r.status = "done";
     res.json({ wallet: r.wallet });
   } catch (e) {
@@ -136,15 +180,14 @@ app.post("/api/signup", async (req, res) => {
     if (!challenge) throw new Error("signup expired, try again");
     if (!verifyCardSig(cardModulus, cardExponent, challenge, cardSig)) throw new Error("card signature invalid");
     const key = ethers.keccak256(hex(cardModulus));
-    let wallet = await factory.walletOf(key);
-    if (wallet !== ethers.ZeroAddress) {
-      const w = walletAt(wallet);
+    const existing = await rail.findWallet(key);
+    if (existing) {
+      const w = walletAt(existing);
       if ((await w.phoneX()) !== phoneX || (await w.phoneY()) !== phoneY) throw new Error("this card is already linked to another phone");
-      return res.json({ wallet, existing: true });
+      return res.json({ wallet: existing, existing: true });
     }
-    await (await factory.createWallet(hex(cardModulus), hex(cardExponent), phoneX, phoneY, PER_TX, DAILY)).wait();
-    wallet = await factory.walletOf(key);
-    await (await token.faucet(wallet, SIGNUP_GIFT)).wait();
+    const wallet = await rail.createWallet({ key, cardModulus: hex(cardModulus), cardExponent: hex(cardExponent), phoneX, phoneY });
+    await (await token.faucet(wallet, SIGNUP_GIFT, rail.txOverrides)).wait();
     res.json({ wallet });
   } catch (e) {
     res.status(400).json({ error: e.shortMessage || e.message });
@@ -169,7 +212,7 @@ app.post("/api/unfreeze/:id", async (req, res) => {
   const a = actions.get(req.params.id);
   if (!a) return res.status(404).json({ error: "unknown request" });
   try {
-    const rc = await (await walletAt(a.wallet).unfreeze(a.expiry, hex(req.body.cardSig), req.body.phoneSig)).wait();
+    const rc = await (await walletAt(a.wallet).unfreeze(a.expiry, hex(req.body.cardSig), req.body.phoneSig, rail.txOverrides)).wait();
     res.json({ status: "active", txHash: rc.hash });
   } catch (e) {
     res.status(400).json({ error: decodeError(e) });
@@ -183,8 +226,8 @@ app.post("/api/unfreeze/:id", async (req, res) => {
 app.post("/api/pay/start", async (req, res) => {
   try {
     const { cardModulus, amount } = req.body || {};
-    const wallet = await factory.walletOf(ethers.keccak256(hex(cardModulus)));
-    if (wallet === ethers.ZeroAddress) return res.status(404).json({ error: "card not registered" });
+    const wallet = await rail.findWallet(ethers.keccak256(hex(cardModulus)));
+    if (!wallet) return res.status(404).json({ error: "card not registered" });
     const w = walletAt(wallet);
     const value = ethers.parseUnits(String(amount), 6);
     const expiry = (await chainNow()) + PAYMENT_TTL;
@@ -224,11 +267,17 @@ app.post("/api/pay/:id/phone", async (req, res) => {
   if (p.status !== "waiting_for_phone") return res.status(409).json({ error: `payment is ${p.status}` });
   p.status = "submitting";
   try {
-    const tx = await walletAt(p.wallet).pay(await token.getAddress(), MERCHANT, p.value, p.expiry, p.cardSig, req.body.phoneSig);
-    const rc = await tx.wait();
+    const { txHash, gasUsed } = await rail.pay(p, req.body.phoneSig, {
+      token: await token.getAddress(),
+      merchant: MERCHANT,
+      onAdmitted(hash) {
+        p.status = "admitted";
+        p.txHash = hash;
+      },
+    });
     p.status = "paid";
-    p.txHash = rc.hash;
-    p.gasUsed = rc.gasUsed.toString();
+    p.txHash = txHash;
+    p.gasUsed = gasUsed;
   } catch (e) {
     p.status = "failed";
     p.error = decodeError(e);
@@ -288,7 +337,7 @@ app.post("/api/freeze/:id", async (req, res) => {
   const a = actions.get(req.params.id);
   if (!a) return res.status(404).json({ error: "unknown request" });
   try {
-    const rc = await (await walletAt(a.wallet).freeze(a.expiry, req.body.phoneSig)).wait();
+    const rc = await (await walletAt(a.wallet).freeze(a.expiry, req.body.phoneSig, rail.txOverrides)).wait();
     res.json({ status: "frozen", txHash: rc.hash });
   } catch (e) {
     res.status(400).json({ error: decodeError(e) });
@@ -299,7 +348,7 @@ app.post("/api/freeze/:id", async (req, res) => {
 
 function publicPayment(p) {
   const { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed } = p;
-  return { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed, merchant: MERCHANT, merchantName: process.env.MERCHANT_NAME || "Tap2ETH Café" };
+  return { id, wallet, amount, expiry, hash, status, txHash, explorerUrl: rail.explorerLink(txHash), error, gasUsed, merchant: MERCHANT, merchantName: process.env.MERCHANT_NAME || "Tap2ETH Café" };
 }
 
 function decodeError(e) {

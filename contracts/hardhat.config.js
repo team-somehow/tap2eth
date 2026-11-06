@@ -15,8 +15,22 @@ try {
   process.loadEnvFile(require("path").join(__dirname, "..", "relayer", ".env"));
 } catch {}
 
+const BASE_SETTINGS = { optimizer: { enabled: true, runs: 200 }, evmVersion: "cancun" };
+const FRAME_SOURCES = [
+  "contracts/frames/Tap2EthVerifier.sol",
+  "contracts/frames/Tap2EthFrameWallet.sol",
+  "contracts/frames/QuotaPaymaster.sol",
+  "@forshtat/hegota-support/contracts/HegotaSupport.sol",
+];
+
 module.exports = {
-  solidity: { version: "0.8.28", settings: { optimizer: { enabled: true, runs: 200 }, evmVersion: "cancun" } },
+  solidity: {
+    compilers: [{ version: "0.8.28", settings: BASE_SETTINGS }],
+    // Only the frame contracts need the IR pipeline, so the deployed Whitechain contracts compile exactly as before.
+    overrides: Object.fromEntries(
+      FRAME_SOURCES.map((source) => [source, { version: "0.8.28", settings: { ...BASE_SETTINGS, viaIR: true } }]),
+    ),
+  },
   // Contract source verification on the Whitechain Blockscout explorer (the API key can be any non-empty string).
   etherscan: {
     apiKey: { whitechainSepolia: "blockscout" },
@@ -33,6 +47,8 @@ module.exports = {
   },
   sourcify: { enabled: false },
   networks: {
+    // The frame verifier uses the P-256 precompile only, which frame devnets have and Hardhat enables with this flag.
+    hardhat: { enableRip7212: true },
     localhost: { url: "http://127.0.0.1:8545" },
     // Whitechain Sepolia (chain ID 1874), the network for the sponsor track.
     whitechainSepolia: {

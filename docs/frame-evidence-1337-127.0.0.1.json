@@ -1,0 +1,85 @@
+{
+  "wallet": "0xf17F7d61daCa209B8989BD864c873603e9Eb52bB",
+  "rows": [
+    {
+      "scenario": "Canonical mempool rules refuse it (node simulation)",
+      "pass": true,
+      "detail": "StorageReadNonSender"
+    },
+    {
+      "scenario": "Canonical mempool refuses it (real submission)",
+      "pass": true,
+      "detail": "Invalid params: Frame transaction validation-prefix simulation failed: StorageReadNonSender"
+    },
+    {
+      "scenario": "Unstaked paymaster refused",
+      "pass": true,
+      "detail": "unstaked payer accessed payer slot 0x0000000000000000000000000000000000000000000000000000000000000000 {\"payer\":\"0xdAf2c9F7Ff7f1ABE3AF5029BB1De07e14722e46E\"}"
+    },
+    {
+      "scenario": "Staked paymaster admitted and paid",
+      "pass": false,
+      "detail": "Reverted, frame gas 29708 / 32829 / 13079 / 889232, validation 75616, 0x1faa77cfaeb69d40fb1f2f6c6e67c6c98e0dd72d6dd65d8beeec07f3c274b455"
+    },
+    {
+      "scenario": "Validation stays under the 100k cap",
+      "pass": true,
+      "detail": "75616 + 2800 signature gas"
+    },
+    {
+      "scenario": "Over the per-payment limit",
+      "pass": true,
+      "detail": "validation frame 0: reverted with data 0xb92612ed"
+    },
+    {
+      "scenario": "Unknown POS key",
+      "pass": true,
+      "detail": "validation frame 0: reverted with data 0xa98d9456"
+    },
+    {
+      "scenario": "Extra SENDER frame tries to drain",
+      "pass": true,
+      "detail": "validation frame 0: reverted with data 0xe383abaf"
+    },
+    {
+      "scenario": "Frozen wallet",
+      "pass": true,
+      "detail": "validation frame 0: reverted with data 0x41dbb51e"
+    },
+    {
+      "scenario": "Forged card signature",
+      "pass": true,
+      "detail": "frames 1,1,1,0, moved 0, quota charged 2641088000000000 wei"
+    },
+    {
+      "scenario": "Forged phone signature",
+      "pass": true,
+      "detail": "frames 1,1,1,0, moved 0, quota charged 2641064000000000 wei"
+    },
+    {
+      "scenario": "Expired payment",
+      "pass": true,
+      "detail": "frames 1,1,1,0, moved 0, quota charged 2641088000000000 wei"
+    },
+    {
+      "scenario": "Payment before the replay",
+      "pass": true,
+      "detail": "OnChain, frame gas 29708 / 32829 / 13079 / 236281, validation 75616, 0x9b0b95cf1796cab09f081edc94a14cba03b913381faf6c5031b18ae7a7c290c8"
+    },
+    {
+      "scenario": "Replay of old card and phone signatures",
+      "pass": true,
+      "detail": "frames 1,1,1,0, moved 0, quota charged 2641112000000000 wei"
+    },
+    {
+      "scenario": "Spend up to the daily limit",
+      "pass": true,
+      "detail": "OnChain, frame gas 29708 / 32829 / 13079 / 226058, validation 75616, 0xd98c8abc7a0b810b2d25fdd8153f4046c383ac93dbeed78292aee4e46f205374"
+    },
+    {
+      "scenario": "Over the daily limit",
+      "pass": false,
+      "detail": "frames 1,1,1,1, moved 25000000, quota charged 2641112000000000 wei"
+    }
+  ]
+}
