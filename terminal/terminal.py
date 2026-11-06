@@ -19,10 +19,14 @@ import hashlib
 import http.server
 import json
 import os
+import re
+import shutil
+import subprocess
 import signal
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import serial
@@ -35,6 +39,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Loudness is a level from 0 (mute) to 10 (loudest), changed from the screen and remembered across restarts.
 MAX_LEVEL = 10
 VOLUME_FILE = os.path.expanduser("~/.tap2eth-volume")
+# Where the relayer is. Wins over --relayer and is re-read on every request, so it can be changed without
+# sudo or a restart. Best as the laptop's network name (http://<name>.local:8787): it survives IP changes.
+RELAYER_FILE = os.path.expanduser("~/.tap2eth-relayer")
+OFFLINE = "Can't reach the payment server. Check the terminal's Wi-Fi."
 
 
 def load_level(default_percent):
@@ -155,7 +163,7 @@ class Terminal:
             self.ser.open()
         self.lock = threading.Lock()
         self.sig_event = threading.Event()
-        self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None, "volume": level}
+        self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None, "volume": level, "online": None}
         self._reset_tap()
 
     def set_volume(self, level):
@@ -191,14 +199,40 @@ class Terminal:
         except Exception:  # noqa: BLE001
             pass
 
+    def relayer_url(self):
+        try:
+            url = open(RELAYER_FILE).read().strip()
+            if url:
+                return url.rstrip("/")
+        except OSError:
+            pass
+        return self.relayer
+
+    def watch_relayer(self):
+        """Check every few seconds that the relayer answers, so the screen can warn before a payment fails."""
+        while True:
+            try:
+                urllib.request.urlopen(self.relayer_url() + "/", timeout=4)
+                online = True
+            except urllib.error.HTTPError:
+                online = True  # it answered, just not with a page
+            except Exception:  # noqa: BLE001
+                online = False
+            with self.lock:
+                self.state["online"] = online
+            time.sleep(5)
+
     def post(self, path, body=None):
-        req = urllib.request.Request(self.relayer + path, data=json.dumps(body or {}).encode() if body is not None else None,
+        req = urllib.request.Request(self.relayer_url() + path, data=json.dumps(body or {}).encode() if body is not None else None,
                                      headers={"content-type": "application/json"}, method="POST" if body is not None else "GET")
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
             raise RuntimeError(json.loads(e.read()).get("error", str(e)))
+        except (urllib.error.URLError, OSError) as e:
+            print(f"relayer unreachable at {self.relayer_url()}: {e}", flush=True)
+            raise RuntimeError(OFFLINE)
 
     # merchant actions
     def start_payment(self, amount):
@@ -334,9 +368,24 @@ class Terminal:
                 return
             self.post(f"/api/pay/{pay_id}/card", {"cardSig": sig})
             self.set(mode="waiting", detail="Card ✓ — approve on your phone…")
+            lost = 0
             while True:
                 time.sleep(1)
-                p = self.post(f"/api/pay/{pay_id}")
+                # The payment may still go through while the network is down: never call it declined for that.
+                try:
+                    p = self.post(f"/api/pay/{pay_id}")
+                except RuntimeError as e:
+                    if str(e) != OFFLINE:
+                        raise
+                    lost += 1
+                    if lost == 1:
+                        self.set(detail="Connection lost — reconnecting…")
+                    if lost > 90:
+                        raise RuntimeError("Lost the payment server. Check the customer's phone before charging again.")
+                    continue
+                if lost:
+                    lost = 0
+                    self.set(detail="Card ✓ — approve on your phone…")
                 if p["status"] == "paid":
                     self.set(mode="done", screen=f"Paid {p['amount']} USDT ✓", detail="Thank you!", tx=p.get("txHash"), ok=True)
                     return
@@ -357,6 +406,72 @@ class Terminal:
             self._reset_tap()
 
 
+# ------------------------------------------------------------------------------- Wi-Fi (settings screen)
+
+class WifiError(Exception):
+    pass
+
+
+def nmcli(args, timeout=20):
+    """Run nmcli; if NetworkManager refuses the service user, retry through sudo (setup.sh allows nmcli only)."""
+    if not shutil.which("nmcli"):
+        raise WifiError("Wi-Fi settings work on the Pi only.")
+    err = ""
+    for cmd in (["nmcli", *args], ["sudo", "-n", "nmcli", *args]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise WifiError("Wi-Fi took too long to answer. Try again.")
+        if r.returncode == 0:
+            return r.stdout
+        err = (r.stderr or r.stdout).strip()
+        if not re.search(r"not authori[sz]ed|permission|privileges", err, re.I):
+            break
+    if re.search(r"not authori[sz]ed|permission|privileges|password is required", err, re.I):
+        raise WifiError("This terminal isn't allowed to change Wi-Fi yet. Run the one-time setup in pi/README.md.")
+    raise WifiError(err or "Wi-Fi command failed.")
+
+
+def _fields(line):
+    """nmcli -t separates fields with ':' and escapes ':' inside values as '\\:'."""
+    return [p.replace("\\:", ":") for p in re.split(r"(?<!\\):", line)]
+
+
+def wifi_scan(rescan=False):
+    fields = ["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan"]
+    try:
+        out = nmcli(fields + ["yes" if rescan else "auto"], timeout=30)
+    except WifiError:
+        if not rescan:
+            raise
+        out = nmcli(fields + ["no"], timeout=30)  # a fresh scan needs permission; the last scan's list does not
+    nets, current = {}, None
+    for line in out.splitlines():
+        f = _fields(line)
+        if len(f) < 4 or not f[1]:
+            continue  # hidden networks have no name to show
+        ssid, signal, secure = f[1], int(f[2] or 0), f[3] not in ("", "--")
+        if f[0] == "*":
+            current = ssid
+        if ssid not in nets or signal > nets[ssid]["signal"]:
+            nets[ssid] = {"ssid": ssid, "signal": signal, "secure": secure}
+    nets = sorted(nets.values(), key=lambda n: (n["ssid"] != current, -n["signal"]))
+    return {"current": current, "networks": nets}
+
+
+def wifi_connect(ssid, password):
+    """Join a network. The password goes to nmcli only: never logged, never sent back."""
+    try:
+        nmcli(["device", "wifi", "connect", ssid] + (["password", password] if password else []), timeout=45)
+    except WifiError as e:
+        m = str(e)
+        if re.search(r"secrets were required|802-11-wireless-security|psk", m, re.I):
+            raise WifiError("Wrong password. Try again.")
+        if re.search(r"no network with ssid", m, re.I):
+            raise WifiError("That network is out of range.")
+        raise
+
+
 # ------------------------------------------------------------------------------- web UI
 
 def make_handler(term):
@@ -372,9 +487,20 @@ def make_handler(term):
             self.end_headers()
             self.wfile.write(b)
 
+        def _local(self):
+            # Settings (Wi-Fi) only from the Pi's own screen, never from another machine on the network.
+            return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
         def do_GET(self):
             if self.path == "/state":
                 return self._json(term.state)
+            if self.path.startswith("/wifi"):
+                if not self._local():
+                    return self._json({"error": "Settings work on the terminal's own screen only."}, 403)
+                try:
+                    return self._json(wifi_scan(rescan="rescan=1" in self.path))
+                except WifiError as e:
+                    return self._json({"error": str(e)}, 500)
             b = open(os.path.join(HERE, "ui.html"), "rb").read()
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")
@@ -394,6 +520,17 @@ def make_handler(term):
                     term.set_volume(body["level"])
                 except (KeyError, TypeError, ValueError):
                     return self._json({"error": "level must be 0-10"}, 400)
+            elif self.path == "/wifi":
+                if not self._local():
+                    return self._json({"error": "Settings work on the terminal's own screen only."}, 403)
+                ssid, pw = body.get("ssid"), body.get("password") or ""
+                if not isinstance(ssid, str) or not 0 < len(ssid) <= 32 or not isinstance(pw, str) or len(pw) > 63:
+                    return self._json({"error": "Check the network name and password."}, 400)
+                try:
+                    wifi_connect(ssid, pw)
+                except WifiError as e:
+                    return self._json({"error": str(e)}, 400)
+                return self._json({"ok": True, "current": ssid})
             elif self.path == "/key":
                 key = body.get("key")
                 if not isinstance(key, str) or key not in KEY_NOTES:
@@ -421,8 +558,9 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # so systemd restarts leave the pin quiet
     term = Terminal(a.serial, a.relayer, a.i2c_bus, buzzer, level)
     threading.Thread(target=term.run_i2c if term.reader else term.run, daemon=True).start()
+    threading.Thread(target=term.watch_relayer, daemon=True).start()
     src = f"i2c-{a.i2c_bus} (chip 0x{term.reader.version:02X})" if term.reader else a.serial
-    print(f"terminal UI on http://localhost:{a.port}  (reader {src}, relayer {a.relayer})", flush=True)
+    print(f"terminal UI on http://localhost:{a.port}  (reader {src}, relayer {term.relayer_url()})", flush=True)
     buzzer.play("ready")
     try:
         http.server.ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(term)).serve_forever()

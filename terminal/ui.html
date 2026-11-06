@@ -5,100 +5,160 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tap2ETH Terminal</title>
   <style>
-    /* NeoBrutalism, same as the phone app: thick black borders, hard offset shadows, flat electric colour. */
-    :root { --paper: #FFFEF0; --ink: #0A0A0A; --yellow: #FFE600; --cyan: #00C2CB; --pink: #FF3EA5; --green: #00C853; --muted: #5A5A5A; --b: 3px solid var(--ink); }
+    /* Same look as the phone app: light, minimal neobrutalism. Thin black borders, small hard shadows on things
+       you press, one accent (yellow). Green and red only for paid / declined. Built for the 3.5" screen (~505x337). */
+    :root {
+      --paper: #F3F0E8; --ink: #0A0A0A; --soft: #4A4A4A; --muted: #8A8A8A; --line: #DCD8CC;
+      --yellow: #FFE600; --green: #0E7A3E; --red: #C4005A; --card: #14213D; --gold: #C9A14A;
+      --b: 2px solid var(--ink); --r: 10px; --shadow: 2px 2px 0 1px var(--ink);
+    }
     * { box-sizing: border-box; margin: 0; }
     html, body { height: 100%; overflow: hidden; }
-    body { font-family: "Arial Black", "Helvetica Neue", system-ui, sans-serif; font-weight: 800; background: var(--paper); color: var(--ink); user-select: none; -webkit-tap-highlight-color: transparent; }
+    body { font-family: system-ui, "Roboto", "Helvetica Neue", Arial, sans-serif; font-weight: 500; background: var(--paper); color: var(--ink); user-select: none; -webkit-tap-highlight-color: transparent; }
     .screen { position: absolute; inset: 0; display: none; }
     .screen.on { display: flex; }
-    button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulation; text-transform: uppercase; background: #fff; border: var(--b); box-shadow: 4px 4px 0 var(--ink); }
-    /* Pressing sinks a button into the page: it moves by the size of its shadow and the shadow goes. */
-    button:active { transform: translate(4px, 4px); box-shadow: 0 0 0 var(--ink); }
+    button { font: inherit; font-weight: 700; color: inherit; cursor: pointer; touch-action: manipulation; background: #fff; border: var(--b); border-radius: var(--r); box-shadow: var(--shadow); }
+    /* Pressing sinks a button into the page: it moves by its shadow and the shadow goes. */
+    button:active { transform: translate(3px, 3px); box-shadow: none; }
+    button.plain { background: none; border: 0; box-shadow: none; color: var(--soft); text-decoration: underline; font-weight: 600; }
+    button.plain:active { transform: none; opacity: .5; }
+    button.primary { background: var(--yellow); }
+    button[disabled] { opacity: .4; cursor: default; }
+    button[disabled]:active { transform: none; box-shadow: var(--shadow); }
+    .eyebrow { font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace; font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--soft); }
 
-    /* ---------- amount entry ---------- */
-    #s-entry { padding: 12px; gap: 14px; background: var(--paper); }
+    /* ---------- amount entry (the home screen) ---------- */
+    #s-entry { padding: 14px; gap: 14px; }
     .entry-left { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; }
-    .merchant { align-self: flex-start; background: var(--yellow); border: var(--b); box-shadow: 3px 3px 0 var(--ink); padding: 3px 9px; font-size: 12px; text-transform: uppercase; letter-spacing: .3px; }
-    .amount { background: #fff; border: var(--b); box-shadow: 5px 5px 0 var(--ink); padding: 8px 12px; font-size: 44px; font-weight: 900; letter-spacing: -1px; line-height: 1; word-break: break-all; display: flex; align-items: baseline; gap: 8px; }
-    .amount .cur, .big .cur { font-size: 13px; font-weight: 900; letter-spacing: 0; background: var(--cyan); border: 2.5px solid var(--ink); padding: 2px 6px; }
-    .amount.empty { color: #B8B8A8; }
-    .hint { margin-top: 10px; font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--muted); }
-    .charge { width: 100%; padding: 12px 8px; background: var(--green); font-size: 22px; font-weight: 900; box-shadow: 5px 5px 0 var(--ink); }
-    .charge[disabled] { background: #E7E6D6; color: #9A9A8A; box-shadow: 5px 5px 0 #9A9A8A; border-color: #9A9A8A; cursor: default; }
-    .charge[disabled]:active { transform: none; }
-    .pad { width: 216px; flex: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 9px; padding: 0 5px 5px 0; }
-    .pad button { font-size: 24px; font-weight: 900; box-shadow: 3px 3px 0 var(--ink); }
-    .pad button:active { transform: translate(3px, 3px); }
-    .pad .del { background: var(--pink); font-size: 18px; font-weight: 900; letter-spacing: .5px; }
-
-    /* volume: 0 is mute, 10 is loudest */
-    .vol { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
-    .vol-l { font-size: 11px; text-transform: uppercase; }
-    .vol button { width: 28px; height: 28px; padding: 0; font-size: 18px; font-weight: 900; line-height: 1; box-shadow: 2px 2px 0 var(--ink); }
-    .vol button:active { transform: translate(2px, 2px); }
-    .meter { display: flex; gap: 2px; flex: 1; max-width: 120px; height: 20px; border: var(--b); background: #fff; padding: 2px; }
-    .meter i { flex: 1; background: #ECEBDD; }
-    .meter i.on { background: var(--ink); }
-    .meter i.on.hot { background: var(--pink); }
-    .vol-n { min-width: 20px; font-size: 15px; font-weight: 900; text-align: center; }
+    /* café header: hold it for 2 seconds to open settings */
+    #merchant { display: flex; align-items: center; gap: 9px; padding: 2px 0; touch-action: none; }
+    .brand-name { font-size: 16px; font-weight: 900; letter-spacing: -.2px; line-height: 1.1; }
+    .cup { width: 30px; height: 30px; flex: none; overflow: visible; }
+    .steam { fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linecap: round; opacity: 0; animation: steam 2.8s ease-in-out infinite; }
+    .steam.s2 { animation-delay: .9s; } .steam.s3 { animation-delay: 1.8s; }
+    @keyframes steam { 0% { opacity: 0; transform: translateY(3px); } 40% { opacity: .7; } 100% { opacity: 0; transform: translateY(-4px); } }
+    .amount.pop { animation: pop .16s ease-out; }
+    @keyframes pop { 0% { transform: scale(1); } 45% { transform: scale(1.05); } 100% { transform: scale(1); } }
+    .amount { transform-origin: left bottom; }
+    .amount { font-size: 50px; font-weight: 900; letter-spacing: -1.5px; line-height: 1.05; word-break: break-all; padding-bottom: 6px; border-bottom: 2px solid var(--ink); }
+    .amount .cur, .big .cur { font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace; font-size: 13px; font-weight: 600; letter-spacing: 1px; color: var(--soft); margin-left: 6px; }
+    .amount.empty { color: #BDB9AC; }
+    .hint { margin-top: 8px; font-size: 13px; color: var(--soft); }
+    .offline { margin-top: 6px; font-size: 12px; font-weight: 700; color: var(--red); display: none; }
+    .offline.on { display: block; }
+    .charge { width: 100%; padding: 13px 8px; font-size: 22px; font-weight: 800; }
+    .pad { width: 210px; flex: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 8px; padding: 0 3px 3px 0; }
+    .pad button { font-size: 24px; font-weight: 700; }
+    .pad .del { font-size: 15px; font-weight: 700; color: var(--soft); }
 
     /* ---------- tap / waiting / result ---------- */
-    .center { flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 14px 20px; gap: 8px; }
-    .big { display: inline-flex; align-items: baseline; gap: 8px; background: #fff; border: var(--b); box-shadow: 5px 5px 0 var(--ink); padding: 4px 16px; font-size: 40px; font-weight: 900; letter-spacing: -1px; }
-    .title { font-size: 24px; font-weight: 900; text-transform: uppercase; }
-    .sub { font-size: 13px; font-weight: 800; max-width: 400px; line-height: 1.3; min-height: 18px; }
-    .ghost { margin-top: 8px; padding: 8px 22px; font-size: 13px; font-weight: 900; }
+    .center { flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 14px 24px; gap: 8px; }
+    .big { font-size: 40px; font-weight: 900; letter-spacing: -1px; line-height: 1.1; }
+    .title { font-size: 22px; font-weight: 800; }
+    .sub { font-size: 14px; color: var(--soft); max-width: 400px; line-height: 1.35; min-height: 19px; }
+    .ghost { margin-top: 6px; padding: 6px 18px; font-size: 14px; }
 
-    #s-tap { background: var(--yellow); }
-    #s-phone { background: var(--cyan); }
-    #s-paid { background: var(--green); }
-    #s-declined { background: var(--pink); }
-
-    /* contactless mark with pulsing rings */
-    .tapmark { position: relative; width: 130px; height: 84px; margin-bottom: 6px; }
-    .card { position: absolute; left: 8px; top: 8px; width: 100px; height: 64px; background: #fff; border: var(--b); box-shadow: 5px 5px 0 var(--ink); }
-    .card::before { content: ""; position: absolute; left: 10px; top: 18px; width: 26px; height: 20px; background: var(--cyan); border: 2.5px solid var(--ink); }
-    .card::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 8px; height: 5px; background: var(--ink); }
-    .ring { position: absolute; right: -2px; top: 50%; width: 22px; height: 22px; border: 4px solid var(--ink); border-left-color: transparent; border-bottom-color: transparent; border-radius: 50%; transform: translateY(-50%) rotate(45deg); opacity: 0; animation: ring 1.6s ease-out infinite; }
-    .ring.r2 { width: 36px; height: 36px; right: -9px; animation-delay: .25s; }
-    .ring.r3 { width: 50px; height: 50px; right: -16px; animation-delay: .5s; }
+    /* contactless mark: the same navy card and gold chip as the phone app, with pulsing waves */
+    .tapmark { position: relative; width: 138px; height: 82px; margin-bottom: 6px; }
+    .card { position: absolute; left: 4px; top: 4px; width: 104px; height: 66px; background: var(--card); border-radius: 9px; animation: bob 1.6s ease-in-out infinite; }
+    @keyframes bob { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(6px); } }
+    .card::before { content: ""; position: absolute; left: 12px; top: 20px; width: 26px; height: 19px; background: var(--gold); border-radius: 4px; }
+    .ring { position: absolute; right: 2px; top: 50%; width: 20px; height: 20px; border: 3px solid var(--ink); border-left-color: transparent; border-bottom-color: transparent; border-radius: 50%; transform: translateY(-50%) rotate(45deg); opacity: 0; animation: ring 1.6s ease-out infinite; }
+    .ring.r2 { width: 32px; height: 32px; right: -4px; animation-delay: .25s; }
+    .ring.r3 { width: 44px; height: 44px; right: -10px; animation-delay: .5s; }
     @keyframes ring { 0% { opacity: 0; } 30% { opacity: 1; } 100% { opacity: 0; } }
     .busy .ring { animation-duration: .7s; }
 
-    .phone { width: 48px; height: 78px; background: #fff; border: 4px solid var(--ink); box-shadow: 5px 5px 0 var(--ink); display: grid; place-items: center; margin-bottom: 8px; animation: buzz 1.4s ease-in-out infinite; }
-    .phone::after { content: ""; width: 22px; height: 26px; border-radius: 50%; background: var(--pink); border: 3px solid var(--ink); }
+    .phone { width: 44px; height: 74px; background: #fff; border: 3px solid var(--ink); border-radius: 10px; display: grid; place-items: center; margin-bottom: 8px; animation: buzz 1.4s ease-in-out infinite; }
+    .phone::after { content: ""; width: 18px; height: 22px; border-radius: 50%; border: 2.5px solid var(--ink); }
     @keyframes buzz { 0%, 70%, 100% { transform: rotate(0); } 75% { transform: rotate(-6deg); } 85% { transform: rotate(6deg); } }
 
-    .badge { width: 78px; height: 78px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 6px; background: #fff; border: 4px solid var(--ink); box-shadow: 5px 5px 0 var(--ink); }
-    .badge svg { width: 42px; height: 42px; }
-    .tx { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10px; font-weight: 700; background: #fff; border: 2.5px solid var(--ink); padding: 2px 8px; word-break: break-all; max-width: 420px; }
-    .tx:empty { display: none; }
-    #declined-why:empty { display: none; }
+    .badge { width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 4px; background: #fff; border: var(--b); box-shadow: var(--shadow); }
+    .badge svg { width: 38px; height: 38px; }
+    .paid-t { color: var(--green); }
+    /* paid: the badge pops, a coin flies up, a little confetti falls. Short and quiet, like a game's "level clear". */
+    #s-paid.on .badge { animation: popin .45s cubic-bezier(.3, 1.6, .5, 1) both; }
+    @keyframes popin { 0% { transform: scale(.2); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+    .badge-wrap { position: relative; }
+    .coin { position: absolute; left: 50%; top: 6px; width: 26px; height: 26px; margin-left: -13px; border-radius: 50%; background: var(--yellow); border: var(--b); display: grid; place-items: center; font-size: 13px; font-weight: 900; opacity: 0; }
+    #s-paid.on .coin { animation: coin .9s ease-out .15s both; }
+    @keyframes coin { 0% { opacity: 0; transform: translateY(0) scaleX(1); } 15% { opacity: 1; } 50% { transform: translateY(-46px) scaleX(-1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-60px) scaleX(1); } }
+    .confetti { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+    .confetti i { position: absolute; top: -12px; width: 7px; height: 11px; border: 1.5px solid var(--ink); border-radius: 2px; animation: fall 1.9s ease-in forwards; }
+    @keyframes fall { to { transform: translateY(360px) rotate(540deg); } }
+    #s-declined.on .badge { animation: shake .45s ease-in-out .1s both; }
+    @keyframes shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(2px); } }
+    .tx { font-family: ui-monospace, "DejaVu Sans Mono", Menlo, monospace; font-size: 10px; color: var(--soft); word-break: break-all; max-width: 420px; }
+    .tx:empty, #declined-why:empty { display: none; }
+
+    /* ---------- settings (hidden: hold the café name for 2 s) ---------- */
+    .modal { position: absolute; inset: 0; background: var(--paper); display: none; flex-direction: column; z-index: 5; }
+    .modal.on { display: flex; }
+    .bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px 8px; border-bottom: 2px solid var(--ink); }
+    .bar h1 { font-size: 20px; font-weight: 900; letter-spacing: -.3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bar button { padding: 5px 14px; font-size: 14px; flex: none; }
+    .body { flex: 1; overflow-y: auto; padding: 10px 14px 16px; }
+    .body .eyebrow { margin: 8px 0 6px; }
+    .panel { background: #fff; border: var(--b); border-radius: var(--r); box-shadow: var(--shadow); margin-right: 3px; overflow: hidden; }
+    .row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; min-height: 44px; }
+    .row + .row { border-top: 1px solid var(--line); }
+    .row .grow { flex: 1; min-width: 0; font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row .note { font-size: 12px; color: var(--soft); flex: none; }
+    .net { width: 100%; text-align: left; background: none; border: 0; border-radius: 0; box-shadow: none; font-weight: 500; }
+    .net:active { transform: none; background: #FFF9C2; }
+    .bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; flex: none; }
+    .bars i { width: 4px; background: var(--line); border-radius: 1px; }
+    .bars i.on { background: var(--ink); }
+    .lock { width: 12px; height: 14px; flex: none; }
+    .msg { font-size: 13px; color: var(--soft); margin-top: 8px; min-height: 17px; }
+    .msg.err { color: var(--red); font-weight: 600; }
+
+    .vol { display: flex; align-items: center; gap: 10px; }
+    .vol button { width: 36px; height: 34px; padding: 0; font-size: 20px; line-height: 1; flex: none; }
+    .meter { display: flex; gap: 3px; flex: 1; height: 14px; }
+    .meter i { flex: 1; background: var(--line); border-radius: 2px; }
+    .meter i.on { background: var(--ink); }
+    .vol-n { min-width: 22px; font-size: 16px; font-weight: 800; text-align: center; flex: none; }
+
+    /* Wi-Fi password: the screen has no keyboard, so it brings its own */
+    .pw { display: flex; align-items: center; gap: 8px; padding: 0 10px; height: 38px; background: #fff; border: var(--b); border-radius: var(--r); }
+    .pw-v { flex: 1; min-width: 0; font-size: 17px; font-weight: 600; overflow: hidden; white-space: nowrap; }
+    .pw-v.empty { color: #BDB9AC; }
+    .pw-v.err { color: var(--red); font-size: 14px; }
+    .pw.err { border-color: var(--red); }
+    .pw button { padding: 3px 9px; font-size: 12px; box-shadow: none; }
+    .pw button:active { transform: none; opacity: .6; }
+    .kb { display: grid; gap: 5px; margin-top: 8px; }
+    .kb .krow { display: flex; gap: 4px; justify-content: center; }
+    .kb button { flex: 1; max-width: 46px; height: 36px; padding: 0; font-size: 17px; font-weight: 600; box-shadow: 1px 1px 0 1px var(--ink); border-radius: 7px; }
+    .kb button:active { transform: translate(2px, 2px); box-shadow: none; }
+    .kb button.wide { max-width: none; flex: 1.6; font-size: 13px; }
+    .kb button.space { max-width: none; flex: 4; }
+    .kb button.on { background: var(--ink); color: #fff; }
+    .join { width: 100%; margin-top: 10px; padding: 9px; font-size: 16px; }
 
     @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
   </style>
 </head>
 <body>
 
-  <!-- 1. Merchant types the amount -->
+  <!-- 1. Home: the merchant types the amount and charges. Nothing else here on purpose. -->
   <section class="screen on" id="s-entry">
     <div class="entry-left">
-      <div class="merchant">Tap2ETH Café · new bill</div>
+      <div id="merchant">
+        <svg class="cup" viewBox="0 0 30 30" aria-hidden="true">
+          <path class="steam" d="M10 9c-2-2 2-3 0-6"/><path class="steam s2" d="M15 9c-2-2 2-3 0-6"/><path class="steam s3" d="M20 9c-2-2 2-3 0-6"/>
+          <path d="M5 12h19v7a7 7 0 01-7 7h-5a7 7 0 01-7-7z" fill="#fff" stroke="#0A0A0A" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M24 14h1.5a3 3 0 010 6H24" fill="none" stroke="#0A0A0A" stroke-width="2"/>
+        </svg>
+        <div><div class="brand-name">Team Somehow Café</div><div class="eyebrow" id="order-no">Order #1</div></div>
+      </div>
       <div>
         <div class="amount empty" id="amount">0<span class="cur">USDT</span></div>
         <div class="hint" id="entry-hint">Enter the amount</div>
+        <div class="offline" id="offline">Offline · can't reach the payment server</div>
       </div>
-      <div>
-        <button class="charge" id="charge" disabled>Charge</button>
-        <div class="vol">
-          <span class="vol-l">Vol</span>
-          <button id="vol-dn" aria-label="Quieter">−</button>
-          <div class="meter" id="meter"></div>
-          <button id="vol-up" aria-label="Louder">+</button>
-          <span class="vol-n" id="vol-n">5</span>
-        </div>
-      </div>
+      <button class="charge primary" id="charge" disabled>Charge</button>
     </div>
     <div class="pad" id="pad"></div>
   </section>
@@ -122,18 +182,48 @@
 
   <!-- 4a. Paid -->
   <section class="screen center" id="s-paid">
-    <div class="badge"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#0A0A0A" stroke-width="3.5" stroke-linecap="square" stroke-linejoin="miter"/></svg></div>
+    <div class="confetti" id="confetti"></div>
+    <div class="badge-wrap"><span class="coin">$</span><div class="badge"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="#0E7A3E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
     <div class="big" id="paid-amount">0 <span class="cur">USDT</span></div>
-    <div class="title">Paid</div>
+    <div class="title paid-t">Paid</div>
+    <div class="sub">Thanks for visiting Team Somehow Café</div>
     <div class="tx" id="paid-tx"></div>
   </section>
 
   <!-- 4b. Declined -->
   <section class="screen center" id="s-declined">
-    <div class="badge"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="#0A0A0A" stroke-width="3.5" stroke-linecap="square"/></svg></div>
+    <div class="badge"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="#C4005A" stroke-width="3" stroke-linecap="round"/></svg></div>
     <div class="title">Payment declined</div>
     <div class="sub" id="declined-why"></div>
     <button class="ghost" id="declined-ok">New bill</button>
+  </section>
+
+  <!-- Settings: volume and Wi-Fi. Opened by holding the café name on the home screen for 2 seconds. -->
+  <section class="modal" id="m-settings">
+    <div class="bar"><h1>Settings</h1><button id="set-done">Done</button></div>
+    <div class="body">
+      <div class="eyebrow">Volume</div>
+      <div class="panel"><div class="row vol">
+        <button id="vol-dn" aria-label="Quieter">−</button>
+        <div class="meter" id="meter"></div>
+        <button id="vol-up" aria-label="Louder">+</button>
+        <span class="vol-n" id="vol-n">5</span>
+      </div></div>
+
+      <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center"><span>Wi-Fi</span><button class="plain" id="wifi-rescan" style="font-size:12px;padding:0">Scan again</button></div>
+      <div class="panel" id="wifi-list"><div class="row"><span class="note">Looking for networks…</span></div></div>
+      <div class="msg" id="wifi-msg"></div>
+    </div>
+  </section>
+
+  <!-- Wi-Fi password, with an on-screen keyboard -->
+  <section class="modal" id="m-join">
+    <div class="bar"><button id="join-back">‹ Back</button><h1 id="join-title">Join</h1><span style="width:60px"></span></div>
+    <div class="body">
+      <div class="pw" id="pw"><div class="pw-v empty" id="pw-v">Password</div><button id="pw-show">Show</button></div>
+      <div class="kb" id="kb"></div>
+      <button class="join primary" id="join-go">Connect</button>
+    </div>
   </section>
 
 <script>
@@ -144,7 +234,7 @@
   // ---- keypad
   for (const k of ["1","2","3","4","5","6","7","8","9",".","0","⌫"]) {
     const b = document.createElement("button");
-    b.textContent = k === "⌫" ? "DEL" : k;  // a bold word reads better on pink than the thin ⌫ glyph
+    b.textContent = k === "⌫" ? "Del" : k;
     if (k === "⌫") b.className = "del";
     b.onclick = () => press(k);
     $("pad").appendChild(b);
@@ -156,10 +246,29 @@
     else if (entry.length < (linkMode ? 4 : 7) && !(entry.includes(".") && entry.split(".")[1].length >= 2)) entry = (entry === "0" && k !== ".") ? k : entry + k;
     drawEntry();
   }
+  // a running order number, like a real till; it moves on after each paid order
+  let orderNo = Number(localStorage.getItem("orderNo") || 1);
+  const drawOrder = () => { $("order-no").textContent = `Order #${String(orderNo).padStart(3, "0")}`; };
+  drawOrder();
+  function nextOrder() { orderNo += 1; localStorage.setItem("orderNo", orderNo); drawOrder(); }
+
+  function confetti() {
+    const box = $("confetti"); box.innerHTML = "";
+    for (let i = 0; i < 16; i++) {
+      const c = document.createElement("i");
+      c.style.left = `${4 + Math.random() * 92}%`;
+      c.style.background = i % 2 ? "var(--yellow)" : "#fff";
+      c.style.animationDelay = `${Math.random() * .5}s`;
+      c.style.animationDuration = `${1.5 + Math.random() * .9}s`;
+      box.appendChild(c);
+    }
+  }
+
   function drawEntry() {
     const shown = entry || (linkMode ? "····" : "0");
     $("amount").innerHTML = linkMode ? shown : `${shown}<span class="cur">USDT</span>`;
     $("amount").classList.toggle("empty", !entry);
+    $("amount").classList.remove("pop"); void $("amount").offsetWidth; if (entry) $("amount").classList.add("pop");
     $("entry-hint").textContent = linkMode ? "Enter the 4-digit code from the customer's phone" : "Enter the amount";
     $("charge").textContent = linkMode ? "Link card" : "Charge";
     $("charge").disabled = linkMode ? entry.length !== 4 : !(Number(entry) > 0);
@@ -169,11 +278,27 @@
     else post("/pay", { amount: entry });
     entry = ""; linkMode = false; drawEntry();
   };
+
+  const cancel = () => post("/cancel");
+  $("cancel-tap").onclick = cancel;
+  $("cancel-phone").onclick = cancel;
+  $("declined-ok").onclick = cancel;
+
+  // ---- secret way into settings: hold the café name for 2 seconds (customers never find it by accident)
+  let holdTimer;
+  const stopHold = () => clearTimeout(holdTimer);
+  $("merchant").addEventListener("pointerdown", () => { stopHold(); holdTimer = setTimeout(openSettings, 2000); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) $("merchant").addEventListener(ev, stopHold);
+
+  function openSettings() { $("m-settings").classList.add("on"); $("wifi-msg").textContent = ""; loadWifi(false); }
+  function closeSettings() { $("m-settings").classList.remove("on"); $("m-join").classList.remove("on"); }
+  $("set-done").onclick = closeSettings;
+
   // ---- volume (0 mute .. 10 loudest), kept on the terminal so it survives a restart
   let vol = 5, volHold = 0;
   for (let i = 0; i < 10; i++) $("meter").appendChild(document.createElement("i"));
   function drawVol() {
-    [...$("meter").children].forEach((c, i) => { c.classList.toggle("on", i < vol); c.classList.toggle("hot", i >= 7); });
+    [...$("meter").children].forEach((c, i) => c.classList.toggle("on", i < vol));
     $("vol-n").textContent = vol;
   }
   function setVol(n) {
@@ -186,10 +311,112 @@
   $("vol-up").onclick = () => setVol(vol + 1);
   drawVol();
 
-  const cancel = () => post("/cancel");
-  $("cancel-tap").onclick = cancel;
-  $("cancel-phone").onclick = cancel;
-  $("declined-ok").onclick = cancel;
+  // ---- Wi-Fi
+  const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const bars = (sig) => `<span class="bars">${[25, 50, 75].map((t, i) => `<i class="${sig >= t ? "on" : ""}" style="height:${5 + i * 4}px"></i>`).join("")}</span>`;
+  const lock = '<svg class="lock" viewBox="0 0 12 14"><rect x="1" y="6" width="10" height="7" rx="1.5" fill="#0A0A0A"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" fill="none" stroke="#0A0A0A" stroke-width="1.6"/></svg>';
+  let nets = [], current = null;
+  async function loadWifi(rescan) {
+    $("wifi-list").innerHTML = `<div class="row"><span class="note">${rescan ? "Scanning…" : "Looking for networks…"}</span></div>`;
+    try {
+      const j = await (await fetch("/wifi" + (rescan ? "?rescan=1" : ""))).json();
+      if (j.error) throw new Error(j.error);
+      nets = j.networks; current = j.current;
+      drawWifi();
+    } catch (e) {
+      $("wifi-list").innerHTML = `<div class="row"><span class="note">${esc(e.message || "Couldn't list networks.")}</span></div>`;
+    }
+  }
+  function drawWifi() {
+    if (!nets.length) { $("wifi-list").innerHTML = '<div class="row"><span class="note">No networks found. Tap “Scan again”.</span></div>'; return; }
+    $("wifi-list").innerHTML = nets.map((n, i) => `
+      <button class="row net" data-i="${i}">
+        <span class="grow">${esc(n.ssid)}</span>
+        ${n.ssid === current ? '<span class="note">Connected</span>' : ""}
+        ${n.secure ? lock : ""}${bars(n.signal)}
+      </button>`).join("");
+    for (const b of $("wifi-list").querySelectorAll(".net")) b.onclick = () => pickNet(nets[+b.dataset.i]);
+  }
+  $("wifi-rescan").onclick = () => loadWifi(true);
+
+  let joining = null;
+  function pickNet(n) {
+    if (n.ssid === current) { $("wifi-msg").classList.remove("err"); $("wifi-msg").textContent = `Already connected to ${n.ssid}.`; return; }
+    if (!n.secure) return connect(n.ssid, "", $("wifi-msg"));
+    joining = n; pw = ""; showPw = false; shift = false; layer = 0;
+    $("join-title").textContent = n.ssid;
+    pwErr = "";
+    drawPw(); drawKb();
+    $("m-join").classList.add("on");
+  }
+  $("join-back").onclick = () => { $("m-join").classList.remove("on"); pw = ""; };
+  $("join-go").onclick = () => connect(joining.ssid, pw, true);
+
+  // Status goes on the Connect button and errors inside the password field: the 3.5" screen has no room below.
+  async function connect(ssid, password, fromJoin) {
+    const msg = $("wifi-msg");
+    if (fromJoin) { $("join-go").textContent = "Connecting…"; pwErr = ""; drawPw(); }
+    else { msg.classList.remove("err"); msg.textContent = `Connecting to ${ssid}…`; }
+    $("join-go").disabled = true;
+    try {
+      const j = await (await post("/wifi", { ssid, password })).json();
+      if (j.error) throw new Error(j.error);
+      current = ssid; pw = "";
+      $("m-join").classList.remove("on");
+      $("wifi-msg").classList.remove("err"); $("wifi-msg").textContent = `Connected to ${ssid}.`;
+      drawWifi();
+    } catch (e) {
+      if (fromJoin) { pw = ""; pwErr = e.message || "Couldn't connect."; drawPw(); }
+      else { msg.classList.add("err"); msg.textContent = e.message || "Couldn't connect."; }
+    } finally {
+      $("join-go").disabled = false;
+      $("join-go").textContent = "Connect";
+    }
+  }
+
+  // ---- on-screen keyboard for the password
+  let pw = "", pwErr = "", showPw = false, shift = false, layer = 0;
+  const LAYERS = [
+    ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+    ["1234567890", "@#$%&*-+()", "!\"':;/?,."],
+    ["~`|\\<>{}[]", "_=^€£¥•", "§¶°©®™"],
+  ];
+  function drawPw() {
+    const v = $("pw-v");
+    if (pw) pwErr = "";  // typing again clears the last error
+    v.classList.toggle("empty", !pw);
+    v.classList.toggle("err", !pw && !!pwErr);
+    $("pw").classList.toggle("err", !pw && !!pwErr);
+    const t = showPw ? pw : "•".repeat(pw.length);
+    v.textContent = !pw ? (pwErr || "Password") : t.length > 26 ? "…" + t.slice(-25) : t;  // long passwords: show the end, where typing happens
+    $("pw-show").textContent = showPw ? "Hide" : "Show";
+  }
+  $("pw-show").onclick = () => { showPw = !showPw; drawPw(); };
+  function key(label, fn, cls) {
+    const b = document.createElement("button");
+    b.textContent = label; if (cls) b.className = cls;
+    b.onclick = fn;
+    return b;
+  }
+  function drawKb() {
+    const kb = $("kb"); kb.innerHTML = "";
+    const rows = LAYERS[layer];
+    rows.forEach((r, ri) => {
+      const row = document.createElement("div"); row.className = "krow";
+      if (ri === 2 && layer === 0) row.appendChild(key("⇧", () => { shift = !shift; drawKb(); }, "wide" + (shift ? " on" : "")));
+      if (ri === 2 && layer > 0) row.appendChild(key(layer === 1 ? "#+=" : "123", () => { layer = layer === 1 ? 2 : 1; drawKb(); }, "wide"));
+      for (const ch of r) {
+        const c = layer === 0 && shift ? ch.toUpperCase() : ch;
+        row.appendChild(key(c, () => { if (pw.length < 63) pw += c; if (shift) { shift = false; drawKb(); } drawPw(); }));
+      }
+      if (ri === 2) row.appendChild(key("⌫", () => { pw = pw.slice(0, -1); drawPw(); }, "wide"));
+      kb.appendChild(row);
+    });
+    const last = document.createElement("div"); last.className = "krow";
+    last.appendChild(key(layer === 0 ? "123" : "ABC", () => { layer = layer === 0 ? 1 : 0; drawKb(); }, "wide"));
+    last.appendChild(key("space", () => { if (pw.length < 63) pw += " "; drawPw(); }, "space"));
+    kb.appendChild(last);
+  }
 
   // ---- plain-language reasons
   function why(s) {
@@ -205,11 +432,15 @@
   const fmt = (a) => Number(a).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 
   // ---- state → screen
-  function show(id) { for (const s of document.querySelectorAll(".screen")) s.classList.toggle("on", s.id === id); }
+  function show(id) {
+    for (const s of document.querySelectorAll(".screen")) s.classList.toggle("on", s.id === id);
+    if (id !== "s-entry") closeSettings();  // a payment always wins over settings
+  }
   async function tick() {
     let s;
     try { s = await (await fetch("/state")).json(); } catch { return; }
     if (typeof s.volume === "number" && s.volume !== vol && Date.now() > volHold) { vol = s.volume; drawVol(); }
+    $("offline").classList.toggle("on", s.online === false);
     const key = JSON.stringify([s.mode, s.detail, s.ok, s.tx]);
     if (key === last) return;
     last = key;
@@ -217,17 +448,21 @@
     if (s.mode === "idle") return show("s-entry");
     if (s.mode === "pay" || s.mode === "register") {
       const reading = /Reading|Almost/.test(s.detail || "");
-      $("tap-amount").innerHTML = s.mode === "pay" ? `${fmt(s.amount)} <span class="cur">USDT</span>` : `Code ${s.code}`;
+      $("tap-amount").innerHTML = s.mode === "pay" ? `${fmt(s.amount)}<span class="cur">USDT</span>` : `Code ${s.code}`;
       $("tap-title").textContent = reading ? "Keep holding…" : s.mode === "pay" ? "Tap your card" : "Tap the card to link";
       $("tap-sub").textContent = reading ? "Reading your card. Don't move it." : /Couldn't|tap again/.test(s.detail || "") ? "Couldn't read it. Hold the card flat on the reader and keep it still." : "Hold it flat on the reader until you're told to remove it";
       $("tapmark").classList.toggle("busy", reading);
       return show("s-tap");
     }
-    if (s.mode === "waiting") { $("phone-sub").textContent = `${fmt(s.amount)} USDT · card read. You can remove the card now.`; return show("s-phone"); }
+    if (s.mode === "waiting") {
+      $("phone-sub").textContent = /reconnecting/i.test(s.detail || "") ? "Connection lost. Reconnecting… the payment isn't lost." : `${fmt(s.amount)} USDT · card read. You can remove the card now.`;
+      return show("s-phone");
+    }
     if (s.ok === true) {
-      $("paid-amount").innerHTML = s.amount ? `${fmt(s.amount)} <span class="cur">USDT</span>` : "Card linked";
+      $("paid-amount").innerHTML = s.amount ? `${fmt(s.amount)}<span class="cur">USDT</span>` : "Card linked";
       $("paid-tx").textContent = s.tx ? "tx " + s.tx.slice(0, 18) + "…" + s.tx.slice(-6) : (s.detail || "");
       show("s-paid");
+      if (s.amount) { confetti(); nextOrder(); }
       resetTimer = setTimeout(cancel, 6000);
       return;
     }

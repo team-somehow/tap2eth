@@ -30,7 +30,7 @@ const DAILY_GAS_BUDGET = ethers.parseEther(process.env.DAILY_GAS_BUDGET || "0.5"
 const MERCHANT_RAW = process.env.CAFE_OWNER_ADDRESS || process.env.MERCHANT_ADDRESS || "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"; // last: Hardhat account #1
 if (!ethers.isAddress(MERCHANT_RAW)) throw new Error(`CAFE_OWNER_ADDRESS is not a valid address: ${MERCHANT_RAW}`);
 const MERCHANT = ethers.getAddress(MERCHANT_RAW);
-const MERCHANT_NAME = process.env.MERCHANT_NAME || "Tap2ETH Café";
+const MERCHANT_NAME = process.env.MERCHANT_NAME || "Team Somehow Café";
 const RECOVERY_DELAY = Number(process.env.RECOVERY_DELAY || 86400);
 // Wallet creations and recoveries allowed per IP per hour. Generous by default so a hackathon demo (many sign-ups from
 // one laptop and one network) never hits it; set SIGNUP_LIMIT=10 on a public deployment.
@@ -212,7 +212,7 @@ app.post("/api/signup/start", limit("signup", SIGNUP_LIMIT, 3600_000), wrap(asyn
     if (!mine) throw httpError(409, "This card is already linked to another phone.");
     return res.json({ existing: true, wallet: existing });
   }
-  const params = { cardModulus: hex(cardModulus), cardExponent: hex(cardExponent), phoneX, phoneY, perTxLimit: units(process.env.PER_TX_LIMIT || 50), dailyLimit: units(process.env.DAILY_LIMIT || 200), recoveryDelay: RECOVERY_DELAY };
+  const params = { cardModulus: hex(cardModulus), cardExponent: hex(cardExponent), phoneX, phoneY, perTxLimit: units(process.env.PER_TX_LIMIT || 50), dailyLimit: units(process.env.DAILY_LIMIT || 50), recoveryDelay: RECOVERY_DELAY };
   const hash = await factory.createHash(params);
   const id = crypto.randomUUID();
   signups.set(id, { params, hash, created: Date.now() });

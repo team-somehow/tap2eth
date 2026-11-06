@@ -13,7 +13,7 @@ const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, "state.json");
 const FRAME_MODE = process.env.PAYMENT_PATH === "frame";
 const ART = path.join(__dirname, "..", "contracts", "artifacts", "contracts", "Tap2EthWallet.sol");
 const PER_TX = ethers.parseUnits(process.env.PER_TX_LIMIT || "50", 6);
-const DAILY = ethers.parseUnits(process.env.DAILY_LIMIT || "200", 6);
+const DAILY = ethers.parseUnits(process.env.DAILY_LIMIT || "50", 6);
 const SIGNUP_GIFT = ethers.parseUnits(process.env.SIGNUP_GIFT || "100", 6);
 const PAYMENT_TTL = 300; // seconds
 
@@ -348,7 +348,7 @@ app.post("/api/freeze/:id", async (req, res) => {
 
 function publicPayment(p) {
   const { id, wallet, amount, expiry, hash, status, txHash, error, gasUsed } = p;
-  return { id, wallet, amount, expiry, hash, status, txHash, explorerUrl: rail.explorerLink(txHash), error, gasUsed, merchant: MERCHANT, merchantName: process.env.MERCHANT_NAME || "Tap2ETH Café" };
+  return { id, wallet, amount, expiry, hash, status, txHash, explorerUrl: rail.explorerLink(txHash), error, gasUsed, merchant: MERCHANT, merchantName: process.env.MERCHANT_NAME || "Team Somehow Café" };
 }
 
 function decodeError(e) {

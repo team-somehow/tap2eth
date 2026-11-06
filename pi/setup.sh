@@ -12,6 +12,12 @@ if ! python3 -c "import serial" 2>/dev/null || ! command -v chromium >/dev/null 
 fi
 sudo usermod -aG dialout,i2c "$USER"   # serial + I2C access
 
+# Wi-Fi from the terminal's settings screen: let the service user run nmcli (and only nmcli) as root.
+NMCLI="$(command -v nmcli || echo /usr/bin/nmcli)"
+echo "$USER ALL=(root) NOPASSWD: $NMCLI" | sudo tee /etc/sudoers.d/tap2eth-nmcli >/dev/null
+sudo chmod 440 /etc/sudoers.d/tap2eth-nmcli
+sudo visudo -cf /etc/sudoers.d/tap2eth-nmcli >/dev/null || { echo "sudoers rule invalid, removing it"; sudo rm -f /etc/sudoers.d/tap2eth-nmcli; }
+
 # The M5Stick shows up as /dev/ttyACM0 on Linux (ESP32-S3 native USB).
 sudo tee /etc/systemd/system/tap2eth-terminal.service >/dev/null <<UNIT
 [Unit]

@@ -14,9 +14,11 @@ import { biometricsReady, createPhoneKey, forgetPhoneKey, signWithPhone } from "
 const RELAYER = "http://localhost:8787";
 
 // Minimal NeoBrutalism: thin black borders, small hard shadows on things you press, one accent (yellow). Bank cards keep their own look.
-const C = { paper: "#FFFEF0", surface: "#FFFFFF", ink: "#0A0A0A", soft: "#4A4A4A", muted: "#8A8A8A", line: "#E7E4D6", yellow: "#FFE600", greenInk: "#0E7A3E", redInk: "#C4005A", card: "#14213D", cardAlt: "#2B3A67", gold: "#C9A14A" };
+const C = { paper: "#F3F0E8", surface: "#FFFFFF", ink: "#0A0A0A", soft: "#4A4A4A", muted: "#8A8A8A", line: "#DCD8CC", yellow: "#FFE600", greenInk: "#0E7A3E", redInk: "#C4005A", card: "#14213D", cardAlt: "#2B3A67", gold: "#C9A14A" };
 /** The signature: a flat shadow, always bottom-right, never blurred. */
-const hard = (n = 3, color = C.ink) => ({ boxShadow: `${n}px ${n}px 0px 0px ${color}` });
+// Shifted 1px less and spread 1px: same visible depth, but the shadow tucks under the border's rounded corners,
+// so no hairline of background shows between border and shadow.
+const hard = (n = 3, color = C.ink) => ({ boxShadow: `${n - 1}px ${n - 1}px 0px 1px ${color}` });
 const box = { borderWidth: 2, borderColor: C.ink };
 const R = 12;
 
@@ -41,7 +43,12 @@ const usd = (n) => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigi
 const usdShort = (n) => "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
 const MASK = "••••";
 
+// When the person taps Cancel during a card wait, the NFC request rejects with a bare "Error". That is not a failure: stay quiet.
+let userCancelAt = 0;
+const stopCard = () => { userCancelAt = Date.now(); cancelCard(); };
+
 function explain(e) {
+  if (Date.now() - userCancelAt < 5000) return "";
   const m = String(e?.message || e);
   if (/permanently invalidated|KeyPermanentlyInvalidated|NO_KEY/i.test(m)) return "This phone's key is no longer valid (fingerprints were changed). Remove the wallet in Cards and create it again.";
   if (/lockout|too many attempts/i.test(m)) return "Too many wrong fingerprints. Wait 30 seconds and try again.";
@@ -152,8 +159,10 @@ function Field(props) {
 function Sheet({ visible, onClose, children }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={s.scrim} onPress={onClose} />
-      <View style={s.sheet}><View style={s.grabber} />{children}</View>
+      <View style={s.sheetWrap}>
+        <Pressable style={s.scrim} onPress={onClose} />
+        <View style={s.sheet}><View style={s.grabber} />{children}</View>
+      </View>
     </Modal>
   );
 }
@@ -191,8 +200,21 @@ function Stepper({ value, onChange, step = 1, min = 1, max = 100000 }) {
     </View>
   );
 }
-function Steps({ at }) {
-  return <View style={s.steps}>{[1, 2, 3].map((n) => <View key={n} style={[s.stepBar, n <= at && { backgroundColor: C.yellow }]} />)}</View>;
+/** Progress header pinned to the top of a flow: "STEP 1 OF 3", a thin bar per step, and the step names. */
+function Steps({ at, labels }) {
+  return (
+    <View style={s.steps}>
+      <Text style={s.eyebrow}>Step {at} of {labels.length}</Text>
+      <View style={s.stepRow}>
+        {labels.map((l, i) => (
+          <View key={l} style={{ flex: 1 }}>
+            <View style={[s.stepBar, i + 1 <= at && { backgroundColor: C.ink }]} />
+            <Text style={[s.stepLbl, i + 1 === at && { color: C.ink, fontWeight: "700" }, i + 1 < at && { color: C.soft }]} numberOfLines={1}>{l}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
 }
 function Back({ title, onPress }) {
   return <Pressable onPress={onPress} hitSlop={10}><Text style={s.back}>‹ {title}</Text></Pressable>;
@@ -255,8 +277,8 @@ function Welcome({ onDone, onRecover }) {
       <View style={s.center}>
         {step === "scanning" ? <ScanArt /> : <ActivityIndicator size="large" color={C.ink} />}
         <Text style={s.h2}>{step === "scanning" ? "Hold your card to the back of the phone" : "Creating your wallet"}</Text>
-        <Text style={s.lede}>{step === "scanning" ? "Keep it still for a couple of seconds. We don't store your card number. The card is only used for signing your payments." : "Confirm with your fingerprint when asked."}</Text>
-        {step === "scanning" && <Button kind="ghost" title="Cancel" onPress={() => { cancelCard(); setStep("intro"); }} />}
+        <Text style={[s.lede, s.mid]}>{step === "scanning" ? "Keep it still for a couple of seconds. We don't store your card number. The card is only used for signing your payments." : "Confirm with your fingerprint when asked."}</Text>
+        {step === "scanning" && <Button kind="ghost" title="Cancel" onPress={() => { stopCard(); setStep("intro"); }} />}
       </View>
     );
   }
@@ -301,7 +323,7 @@ function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, 
         {frozen && <View style={s.frost}><Text style={s.frostText}>🔒 Frozen</Text></View>}
       </View>
 
-      <Text style={[s.small, { marginTop: 24 }]}>Wallet balance</Text>
+      <Text style={[s.eyebrow, { marginTop: 26 }]}>Wallet balance</Text>
       <View style={s.balanceLine}>
         <Text style={s.amount}>{w ? (hidden ? "••••••" : usd(w.balance)) : "–"}</Text>
         <Eye hidden={hidden} onPress={toggleHidden} />
@@ -400,7 +422,7 @@ function CardsTab({ w, openSub, setFreezeOpen, setUnfreezeOpen, onForget, refres
           <Text style={s.fine}>Payments are blocked. Unfreezing needs card and fingerprint.</Text>
         </>
       ) : (
-        <View style={{ marginTop: 14 }}><Button kind="outline" title="Freeze wallet" onPress={() => setFreezeOpen(true)} /></View>
+        <View style={{ marginTop: 10 }}><Button kind="outline" title="Freeze wallet" onPress={() => setFreezeOpen(true)} /></View>
       )}
       <Pressable onPress={onForget}><Text style={s.link}>Remove wallet from this phone</Text></Pressable>
     </ScrollView>
@@ -427,11 +449,11 @@ function LimitsScreen({ w, onBack, secure }) {
         <View style={s.ctlRow}><Text style={s.bold}>Each payment</Text><Stepper value={perTx} onChange={setPerTx} step={5} /></View>
         <View style={[s.ctlRow, s.actBorder]}><Text style={s.bold}>Each day</Text><Stepper value={daily} onChange={setDaily} step={10} /></View>
       </View>
-      <Text style={s.small}>{usd(w.spentToday)} spent today</Text>
+      <Text style={[s.small, { marginTop: 12 }]}>{usd(w.spentToday)} spent today</Text>
       {bad && <Text style={s.err}>A single payment can't be more than the daily limit.</Text>}
       <View style={s.warn}><Text style={s.warnText}>Changing limits needs <Text style={s.bold}>both</Text> card and fingerprint.</Text></View>
       <SecureStatus busy={busy} />
-      <Button title="Save limits" disabled={!!busy || bad} onPress={save} />
+      {!busy && <Button title="Save limits" disabled={bad} onPress={save} />}
     </ScrollView>
   );
 }
@@ -451,7 +473,7 @@ function SmallScreen({ w, onBack, secure }) {
       <Text style={s.pageTitle}>Tap to pay, card only</Text>
       <Text style={s.soft}>Tap your card and you're done. No phone approval for small payments.</Text>
       <View style={[s.activity, { marginTop: 14 }]}>
-        <View style={s.ctlRow}><Text style={s.bold}>Turn on</Text><Switch value={on} onValueChange={setOn} trackColor={{ false: C.line, true: C.ink }} thumbColor={C.yellow} /></View>
+        <View style={s.ctlRow}><Text style={s.bold}>Turn on</Text><Switch value={on} onValueChange={setOn} trackColor={{ false: "#C9C5B8", true: C.ink }} thumbColor={on ? C.yellow : "#fff"} /></View>
       </View>
       {on && (
         <>
@@ -462,7 +484,7 @@ function SmallScreen({ w, onBack, secure }) {
       )}
       <Text style={s.note}>Turning this on or off needs card and fingerprint.</Text>
       <SecureStatus busy={busy} />
-      <Button title="Save" disabled={!!busy} onPress={save} />
+      {!busy && <Button title="Save" onPress={save} />}
     </ScrollView>
   );
 }
@@ -473,7 +495,7 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
   const [hint, setHint] = useState("");
   const resume = useRef(null);
   const aborted = useRef(false);
-  const stop = () => { aborted.current = true; cancelCard(); resume.current?.(); setStage("intro"); };
+  const stop = () => { aborted.current = true; stopCard(); resume.current?.(); setStage("intro"); };
   async function start() {
     aborted.current = false;
     try {
@@ -530,10 +552,10 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
   const at = stage === "tap1" ? 1 : stage === "mid" || stage === "tap2" ? 2 : 3;
   return (
     <View style={s.center}>
-      <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
+      <Steps at={at} labels={["New card", "Current card", "Fingerprint"]} />
       {stage === "sign" ? <ActivityIndicator size="large" color={C.ink} /> : stage === "mid" ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View> : <ScanArt />}
       <Text style={s.h2}>{stage === "tap1" ? "Tap the new card" : stage === "mid" ? "New card read" : stage === "tap2" ? "Now tap one of your current cards" : "Confirm it's you"}</Text>
-      <Text style={s.lede}>{stage === "tap1" ? "Hold the card you want to add to the back of the phone. We don't store the card number." : stage === "mid" ? "Take it away from the phone. Then tap Continue and hold one of your current cards to the phone." : stage === "tap2" ? "One of your existing cards must agree to the new one." : "Use your fingerprint when asked."}</Text>
+      <Text style={[s.lede, s.mid]}>{stage === "tap1" ? "Hold the card you want to add to the back of the phone. We don't store the card number." : stage === "mid" ? "Take it away from the phone. Then tap Continue and hold one of your current cards to the phone." : stage === "tap2" ? "One of your existing cards must agree to the new one." : "Use your fingerprint when asked."}</Text>
       {!!hint && stage === "tap2" && <Text style={[s.fieldErr, { textAlign: "center", marginBottom: 8 }]}>{hint}</Text>}
       {stage === "mid" && <View style={{ alignSelf: "stretch" }}><Button big title="Continue" onPress={() => resume.current?.()} /></View>}
       {stage !== "sign" && <Button kind="ghost" title="Cancel" onPress={stop} />}
@@ -564,7 +586,7 @@ function RecoverScreen({ resume, onDone, onBack }) {
     await AsyncStorage.removeItem("recovery");
     onDone(w);
   };
-  const stop = () => { aborted.current = true; cancelCard(); resumeTap.current?.(); setHint(""); setStage("intro"); };
+  const stop = () => { aborted.current = true; stopCard(); resumeTap.current?.(); setHint(""); setStage("intro"); };
 
   async function start() {
     setErr("");
@@ -667,7 +689,7 @@ function RecoverScreen({ resume, onDone, onBack }) {
           : <ActivityIndicator size="large" color={C.ink} />}
         <Text style={s.h2}>{cancelled ? "Replacement cancelled" : remaining === 0 ? "Ready to finish" : "Moving your wallet here"}</Text>
         {!cancelled && remaining !== null && remaining > 0 && <Text style={[s.sheetAmount, { marginBottom: 8 }]}>{clock2(remaining)}</Text>}
-        <Text style={s.lede}>{cancelled ? "The old phone stopped this replacement. If that was a mistake, start again." : remaining === 0 ? "The waiting period is over. Finish to start using this phone." : "This waiting period protects you if someone else started this. Your old phone can cancel it until the timer ends. You can close the app; it will pick up here."}</Text>
+        <Text style={[s.lede, s.mid]}>{cancelled ? "The old phone stopped this replacement. If that was a mistake, start again." : remaining === 0 ? "The waiting period is over. Finish to start using this phone." : "This waiting period protects you if someone else started this. Your old phone can cancel it until the timer ends. You can close the app; it will pick up here."}</Text>
         {!!err && <Text style={[s.err, { marginTop: 0 }]}>{err}</Text>}
         <View style={{ alignSelf: "stretch" }}>
           {cancelled ? <Button big title="Start again" onPress={startOver} /> : <Button big title={busy ? "Finishing…" : "Finish"} disabled={busy || remaining !== 0} onPress={finishNow} />}
@@ -680,10 +702,10 @@ function RecoverScreen({ resume, onDone, onBack }) {
   const at = stage === "tap1" ? 1 : stage === "mid" || stage === "tap2" ? 2 : 3;
   return (
     <View style={s.center}>
-      <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
+      <Steps at={at} labels={["First card", "Second card", "Fingerprint"]} />
       {stage === "sign" || stage === "sending" ? <ActivityIndicator size="large" color={C.ink} /> : stage === "mid" ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View> : <ScanArt />}
       <Text style={s.h2}>{stage === "tap1" ? "Tap your first card" : stage === "mid" ? "First card read" : stage === "tap2" ? "Now tap a different card" : stage === "sign" ? "Confirm it's you" : "Starting the replacement…"}</Text>
-      <Text style={s.lede}>{stage === "tap1" ? "Hold one of your wallet's cards to the back of the phone. We don't store the card number." : stage === "mid" ? "Take it away from the phone. Then tap Continue and hold a different card of this wallet to the phone." : stage === "tap2" ? "A second card of this wallet must agree." : stage === "sign" ? "Use your fingerprint when asked. This phone will become the wallet's phone." : "Recording it on the network."}</Text>
+      <Text style={[s.lede, s.mid]}>{stage === "tap1" ? "Hold one of your wallet's cards to the back of the phone. We don't store the card number." : stage === "mid" ? "Take it away from the phone. Then tap Continue and hold a different card of this wallet to the phone." : stage === "tap2" ? "A second card of this wallet must agree." : stage === "sign" ? "Use your fingerprint when asked. This phone will become the wallet's phone." : "Recording it on the network."}</Text>
       {!!hint && stage === "tap2" && <Text style={[s.fieldErr, { textAlign: "center", marginBottom: 8 }]}>{hint}</Text>}
       {stage === "mid" && <View style={{ alignSelf: "stretch" }}><Button big title="Continue" onPress={() => resumeTap.current?.()} /></View>}
       {(stage === "tap1" || stage === "mid" || stage === "tap2") && <Button kind="ghost" title="Cancel" onPress={stop} />}
@@ -834,11 +856,11 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
     const at = stage === "tap" ? 1 : stage === "sign" ? 2 : 3;
     return (
       <View style={s.center}>
-        <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
+        <Steps at={at} labels={["Tap card", "Fingerprint", "Send"]} />
         {stage === "tap" ? <ScanArt /> : <ActivityIndicator size="large" color={C.ink} />}
         <Text style={s.h2}>{stage === "tap" ? "Tap your card" : stage === "sign" ? "Confirm it's you" : "Sending…"}</Text>
-        <Text style={s.lede}>{stage === "tap" ? `Hold your bank card to the back of the phone to send ${usd(value)}. We don't store the card number.` : stage === "sign" ? "Use your fingerprint when asked." : "Your payment is being recorded on the network."}</Text>
-        {stage === "tap" && <Button kind="ghost" title="Cancel" onPress={() => { cancelCard(); setStage("review"); }} />}
+        <Text style={[s.lede, s.mid]}>{stage === "tap" ? `Hold your bank card to the back of the phone to send ${usd(value)}. We don't store the card number.` : stage === "sign" ? "Use your fingerprint when asked." : "Your payment is being recorded on the network."}</Text>
+        {stage === "tap" && <Button kind="ghost" title="Cancel" onPress={() => { stopCard(); setStage("review"); }} />}
       </View>
     );
   }
@@ -914,12 +936,14 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
   );
 }
 
+/** Shown in place of the Save button while a change waits for the card, then the fingerprint. Cancel stops the card wait. */
 function SecureStatus({ busy }) {
   if (!busy) return null;
   return (
-    <View style={{ alignItems: "center", marginVertical: 10 }}>
-      {busy === "scan" ? <ScanArt /> : <ActivityIndicator color={C.ink} />}
-      <Text style={s.soft}>{busy === "scan" ? "Hold your bank card to the back of the phone." : "Confirm with your fingerprint."}</Text>
+    <View style={s.secure}>
+      {busy === "scan" ? <ScanArt /> : <ActivityIndicator size="large" color={C.ink} />}
+      <Text style={[s.soft, s.mid, { marginTop: 10 }]}>{busy === "scan" ? "Hold your bank card to the back of the phone." : "Confirm with your fingerprint."}</Text>
+      {busy === "scan" && <View style={{ alignSelf: "stretch" }}><Button kind="ghost" title="Cancel" onPress={stopCard} /></View>}
     </View>
   );
 }
@@ -973,7 +997,7 @@ function DetailBody({ p, hidden, onClose }) {
   const amount = hidden ? MASK : (m.tone === "in" ? "+" : m.tone === "out" ? "−" : "") + usd(p.amount);
   const approved = p.kind === "received" ? "" : p.status !== "paid" ? "" : p.cardOnly ? "Card (small payment)" : "Card and fingerprint";
   const when = p.time ? new Date(p.time).toLocaleString("en-US", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "";
-  const line = (k, v) => !!v && (<View style={s.detailRow}><Text style={s.small}>{k}</Text><Text style={[s.bold, { maxWidth: "62%", textAlign: "right" }]}>{v}</Text></View>);
+  const line = (k, v, addr) => !!v && (<View style={s.detailRow}><Text style={s.small}>{k}</Text><Text selectable={addr} style={[s.bold, { maxWidth: "62%", textAlign: "right" }, addr && s.addrVal]}>{v}</Text></View>);
   return (
     <>
       <Text style={s.soft}>{m.title}</Text>
@@ -982,8 +1006,8 @@ function DetailBody({ p, hidden, onClose }) {
       <View style={s.activity}>
         {line("When", when)}
         {line("Approved with", approved)}
-        {p.kind === "received" && line("From", p.from)}
-        {p.kind === "sent" && line("To", p.to)}
+        {p.kind === "received" && line("From", p.from, true)}
+        {p.kind === "sent" && line("To", p.to, true)}
       </View>
       {!!p.txHash && (
         <Button kind="soft" title="View receipt" onPress={() => Linking.openURL(`https://explorer.testnet.whitechain.io/tx/${p.txHash}`)} />
@@ -1001,7 +1025,7 @@ function TabBar({ tab, setTab }) {
     <View style={s.tabbar}>
       {tabs.map(([id, label, icon]) => (
         <Pressable key={id} style={s.tab} onPress={() => setTab(id)} accessibilityLabel={label}>
-          <View style={[s.tabMark, tab === id && s.tabMarkOn]}>
+          <View style={s.tabMark}>
             <Icon name={icon} size={22} color={tab === id ? C.ink : C.muted} />
           </View>
           <Text style={[s.tabLabel, tab === id && { color: C.ink }]}>{label}</Text>
@@ -1030,7 +1054,7 @@ function Main({ wallet, onForget }) {
   const [refreshing, setRefreshing] = useState(false);
   const seen = useRef(new Set());
 
-  const say = (text, bad) => { setToast({ text, bad }); setTimeout(() => setToast(null), 4000); };
+  const say = (text, bad) => { if (!text) return; setToast({ text, bad }); setTimeout(() => setToast(null), 4000); };
   const copyAddress = async () => { await Clipboard.setStringAsync(wallet); Vibration.vibrate(30); say("Wallet address copied"); };
   const onRefresh = async () => {
     setRefreshing(true);
@@ -1223,7 +1247,7 @@ function Main({ wallet, onForget }) {
         <Button kind="ghost" title="Keep it active" onPress={() => setFreezeOpen(false)} />
       </Sheet>
 
-      <Sheet visible={unfreezeOpen} onClose={() => { if (busy !== "unfreeze") { cancelCard(); setBusy(""); setUnfreezeOpen(false); } }}>
+      <Sheet visible={unfreezeOpen} onClose={() => { if (busy !== "unfreeze") { stopCard(); setBusy(""); setUnfreezeOpen(false); } }}>
         <Text style={s.sheetTitle}>Unfreeze your wallet</Text>
         {busy === "scan" ? (
           <><ScanArt /><Text style={[s.soft, { textAlign: "center", marginBottom: 12 }]}>Hold your bank card to the back of the phone.</Text></>
@@ -1232,7 +1256,7 @@ function Main({ wallet, onForget }) {
         )}
         {!busy && <Button big title="Scan my card" onPress={unfreeze} />}
         {busy === "unfreeze" && <ActivityIndicator color={C.ink} style={{ marginVertical: 12 }} />}
-        <Button kind="ghost" title="Not now" onPress={() => { cancelCard(); setBusy(""); setUnfreezeOpen(false); }} />
+        <Button kind="ghost" title="Not now" onPress={() => { stopCard(); setBusy(""); setUnfreezeOpen(false); }} />
       </Sheet>
     </View>
   );
@@ -1277,8 +1301,11 @@ const s = StyleSheet.create({
   pageTitle: { fontSize: 30, fontWeight: "900", color: C.ink, letterSpacing: -0.8, marginBottom: 6 },
   titleLine: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   lede: { fontSize: 17, color: C.soft, lineHeight: 24, marginBottom: 18, textAlign: "left" },
+  mid: { textAlign: "center", alignSelf: "stretch" },
+  secure: { alignItems: "center", marginTop: 20 },
+  addrVal: { fontFamily: "monospace", fontWeight: "400", fontSize: 13, lineHeight: 19 },
   fine: { fontSize: 13, color: C.soft, marginTop: 12, lineHeight: 18 },
-  note: { fontSize: 12, color: C.soft, textAlign: "center", marginTop: 10, marginBottom: 4 },
+  note: { fontSize: 13, color: C.soft, marginTop: 16, marginBottom: 4 },
   err: { color: C.redInk, marginTop: 14, fontSize: 15, fontWeight: "600" },
   bold: { fontWeight: "700", color: C.ink, fontSize: 15 },
   soft: { color: C.soft, fontSize: 15, lineHeight: 21 },
@@ -1321,8 +1348,10 @@ const s = StyleSheet.create({
   sectionHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginTop: 28, marginBottom: 10 },
   sectionTitle: { fontSize: 18, fontWeight: "800", color: C.ink },
   link2: { fontSize: 14, fontWeight: "700", color: C.ink, textDecorationLine: "underline" },
-  day: { fontSize: 12, fontWeight: "800", color: C.soft, letterSpacing: 0.8, marginTop: 20, marginBottom: 8 },
-  sec: { fontSize: 12, fontWeight: "800", color: C.soft, letterSpacing: 0.8, marginTop: 26, marginBottom: 8 },
+  // small mono uppercase labels, as on etharcade / uthale / betterwallet
+  eyebrow: { fontFamily: "monospace", fontSize: 12, fontWeight: "600", color: C.soft, letterSpacing: 1, textTransform: "uppercase" },
+  day: { fontFamily: "monospace", fontSize: 12, fontWeight: "600", color: C.soft, letterSpacing: 1, marginTop: 20, marginBottom: 8 },
+  sec: { fontFamily: "monospace", fontSize: 12, fontWeight: "600", color: C.soft, letterSpacing: 1, marginTop: 26, marginBottom: 8 },
   activity: { backgroundColor: C.surface, ...box, borderRadius: R, ...hard(3), overflow: "hidden" },
   actRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14 },
   actBorder: { borderTopWidth: 1, borderColor: C.line },
@@ -1336,8 +1365,7 @@ const s = StyleSheet.create({
   // tab bar
   tabbar: { flexDirection: "row", backgroundColor: C.surface, borderTopWidth: 2, borderColor: C.ink, paddingTop: 8, paddingBottom: 14 },
   tab: { flex: 1, alignItems: "center" },
-  tabMark: { paddingHorizontal: 16, paddingVertical: 3, borderRadius: 14, backgroundColor: "rgba(255,230,0,0)" },
-  tabMarkOn: { backgroundColor: C.yellow },
+  tabMark: { paddingHorizontal: 16, paddingVertical: 3 },
   tabLabel: { fontSize: 11, fontWeight: "700", color: C.muted, marginTop: 3 },
   // settings screens
   back: { color: C.ink, fontSize: 15, fontWeight: "700", marginBottom: 8 },
@@ -1345,8 +1373,10 @@ const s = StyleSheet.create({
   stepBtn: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   stepTxt: { fontSize: 20, fontWeight: "700", color: C.ink, lineHeight: 24 },
   stepVal: { minWidth: 56, textAlign: "center", fontWeight: "800", fontSize: 17, color: C.ink },
-  steps: { flexDirection: "row", gap: 6, marginBottom: 14 },
-  stepBar: { flex: 1, height: 8, borderRadius: 99, ...box, backgroundColor: C.surface },
+  steps: { position: "absolute", top: 20, left: 24, right: 24, gap: 10 },
+  stepRow: { flexDirection: "row", gap: 8 },
+  stepBar: { height: 4, borderRadius: 2, backgroundColor: C.line },
+  stepLbl: { fontSize: 12, color: C.muted, marginTop: 6 },
   warn: { backgroundColor: C.surface, borderRadius: R, ...box, padding: 12, marginTop: 14, marginBottom: 6 },
   warnText: { fontSize: 13, lineHeight: 19, color: C.ink },
   field: { ...box, borderRadius: R, backgroundColor: C.surface, marginTop: 6, marginBottom: 8 },
@@ -1387,7 +1417,9 @@ const s = StyleSheet.create({
   quiet: { backgroundColor: C.surface, paddingVertical: 6, alignItems: "center", borderBottomWidth: 1, borderColor: C.ink },
   quietTxt: { color: C.soft, fontSize: 12, fontWeight: "500" },
   // sheets and toast
-  scrim: { flex: 1, backgroundColor: "rgba(10,10,10,.45)" },
+  // the dim colour sits on the wrapper, so it is also behind the sheet's rounded corners
+  sheetWrap: { flex: 1, backgroundColor: "rgba(10,10,10,.45)" },
+  scrim: { flex: 1 },
   sheet: { backgroundColor: C.paper, borderTopLeftRadius: 22, borderTopRightRadius: 22, borderTopWidth: 2, borderLeftWidth: 2, borderRightWidth: 2, borderColor: C.ink, padding: 22, paddingTop: 10, paddingBottom: 30 },
   grabber: { width: 40, height: 5, borderRadius: 9, backgroundColor: C.ink, alignSelf: "center", marginBottom: 18 },
   merchant: { fontSize: 22, fontWeight: "800", color: C.ink, marginTop: 2 },

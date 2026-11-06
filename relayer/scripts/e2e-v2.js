@@ -30,7 +30,7 @@ async function main() {
   const wallet = r.wallet;
   let v = await view(wallet);
   check("wallet view says v2, one card, 100 balance from the test faucet", v.v2 === true && v.cards.length === 1 && Number(v.balance) === 100, `balance ${v.balance}`);
-  check("limits set by the relayer (50 per payment, 200 a day)", Number(v.perTxLimit) === 50 && Number(v.dailyLimit) === 200);
+  check("limits set by the relayer (50 per payment, 50 a day)", Number(v.perTxLimit) === 50 && Number(v.dailyLimit) === 50);
   // Received money is picked up by the relayer's background poll, so give it a moment.
   for (let i = 0; i < 40 && !v.history.some((h) => h.kind === "received" && Number(h.amount) === 100); i++) { await new Promise((r) => setTimeout(r, 1500)); v = await view(wallet); }
   check("history shows the received 100 (after the relayer's poll)", v.history.some((h) => h.kind === "received" && Number(h.amount) === 100));
