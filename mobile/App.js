@@ -4,6 +4,7 @@ import { StatusBar } from "expo-status-bar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { withCard, cancelCard } from "./lib/emv";
 import { biometricsReady, createPhoneKey, forgetPhoneKey, signWithPhone } from "./lib/phone";
+import { DEMO, demoApi, demoCharge } from "./lib/demo";
 
 // The relayer runs on the laptop; `adb reverse tcp:8787 tcp:8787` makes it localhost on the phone.
 const RELAYER = "http://localhost:8787";
@@ -11,6 +12,7 @@ const RELAYER = "http://localhost:8787";
 const C = { paper: "#EEF1F5", surface: "#FFFFFF", ink: "#14213D", soft: "#4B5872", line: "#D7DDE6", gold: "#C9A14A", blue: "#2457F5", green: "#178A55", red: "#C0392B", ice: "#BFD8EE" };
 
 async function api(path, body) {
+  if (DEMO) return demoApi(path, body); // no relayer in demo mode, see lib/demo.js
   const res = await fetch(RELAYER + path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j.error || `Server error (${res.status})`);
@@ -258,6 +260,14 @@ function Home({ wallet, onForget }) {
           )}
         </View>
 
+        {DEMO && (
+          <View style={s.demoBox}>
+            <Text style={s.demoTitle}>DEMO MODE · fake card, fake phone key, fake server</Text>
+            <Button kind="ghost" title="Pretend a shop charges 12" onPress={() => demoCharge(12)} />
+            <Button kind="ghost" title="Pretend a shop charges 60 (over the limit)" onPress={() => demoCharge(60)} />
+          </View>
+        )}
+
         {frozen ? (
           <>
             <Button title="Unfreeze with your card" onPress={() => setUnfreezeOpen(true)} />
@@ -385,6 +395,8 @@ const s = StyleSheet.create({
   merchant: { fontSize: 22, fontWeight: "700", color: C.ink, marginTop: 2 },
   sheetAmount: { fontSize: 54, fontWeight: "800", color: C.ink, letterSpacing: -1.4 },
   sheetTitle: { fontSize: 26, fontWeight: "800", color: C.ink, marginBottom: 8 },
+  demoBox: { marginTop: 18, padding: 12, borderRadius: 14, borderWidth: 1.5, borderStyle: "dashed", borderColor: C.line },
+  demoTitle: { fontSize: 11, fontWeight: "700", color: C.soft, letterSpacing: 0.4, textAlign: "center" },
   toast: { position: "absolute", left: 20, right: 20, bottom: 30, backgroundColor: C.ink, padding: 14, borderRadius: 12 },
   toastText: { color: "#fff", fontWeight: "500", fontSize: 15, textAlign: "center" },
 });

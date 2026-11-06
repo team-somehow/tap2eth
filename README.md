@@ -58,6 +58,47 @@ valid signatures and false for wrong ones.
 | `verifyCard` (RSA + SHA-1) | 151,139 |
 | `verifyPhone` (P-256) | 62,716 |
 
+### v2 contracts (multi-signer wallet)
+
+`contracts/contracts/v2/Tap2EthV2.sol`. v1 above is unchanged. v2 adds, with 28 tests (`contracts/test/Tap2EthV2.test.js`):
+
+- **Daily and per-payment limits** on-chain, changed only with the full threshold of signatures (card + phone).
+- **Optional 1-of-2 for small payments:** payments up to `softLimit` need one signature. By default it must be the phone; a card alone is accepted only if `softCardOnly` is switched on.
+- **More signers, still 2 of N:** add cards or phones (up to 8). Adding needs `threshold` signatures from the existing signers *and* a signature from the new key. Threshold can be raised (2 to N), signers removed (never below the threshold or the last phone).
+- **At least one phone signature on every normal approval.** A card signs only 4 bytes of the payment hash, so two cards alone are never accepted.
+- **Time-locked card recovery** instead of v1's instant phone-only swap: the phone plus the new card start a replacement that takes effect after `recoveryDelay`, and any single signer can cancel it.
+- **Proof of possession at creation:** the card and the phone both sign the creation parameters, so nobody can register a card they don't hold. Wallets are cheap clones.
+
+| v2 on Whitechain Sepolia | Address | Source verified |
+|---|---|---|
+| `Tap2EthFactoryV2` | [`0xFB395D511b5dc33DE8488D936Ac8814166D95A61`](https://explorer.testnet.whitechain.io/address/0xFB395D511b5dc33DE8488D936Ac8814166D95A61#code) | Yes |
+| `Tap2EthWalletV2` (implementation) | [`0x76FDa4413bc97b338c6393C1621DFE4aab89f45C`](https://explorer.testnet.whitechain.io/address/0x76FDa4413bc97b338c6393C1621DFE4aab89f45C#code) | Yes |
+| Smoke-test wallet (fake cards, throwaway token), latest run | [`0xe6536C9C02A3f9EF2efb6C73772cd94D6C6E14f9`](https://explorer.testnet.whitechain.io/address/0xe6536C9C02A3f9EF2efb6C73772cd94D6C6E14f9) | Clone of the implementation |
+
+Live smoke test (`contracts/scripts/smokeV2.js`, run on Whitechain Sepolia, **29 of 29 checks passed**). It uses throwaway fake cards and a throwaway `TestUSDC`, not the track USDT. It covers:
+- receiving two small random deposits (1 to 5) and sending them out with card + phone
+- adding a second card (2 of 3) and paying with card 2 + phone
+- one signature refused, two cards without the phone refused
+- raising the requirement to 3 of 3 and lowering it again
+- hitting the per-payment and daily limits, then raising them with both signatures
+- card-alone payments for tiny amounts (up to 10), and 11 with the card alone refused
+- freeze with the phone alone, payments blocked while frozen, unfreeze with card + phone
+
+| Measured on Whitechain Sepolia | Gas |
+|---|---|
+| Deploy v2 factory | 4,558,406 |
+| Create a wallet (clone + 2 proofs) | 765,960 (v1: 2,566,689) |
+| Add a second card (2 of 3) | 555,553 |
+| `pay`, card + phone | 320,193 |
+| `pay`, card 2 + phone | 243,947 |
+| `pay`, card + card 2 + phone (3 of 3) | 379,953 |
+| `pay`, card alone (tiny amount) | 199,028 |
+| Change limits (card + phone) | 228,084 |
+| Freeze with the phone alone | 104,422 |
+| Unfreeze (card + phone) | 215,787 |
+
+The relayer, PWA and app still use v1. Moving them to v2 is not done yet.
+
 Status and limits:
 - A real payment in the track USDT (`0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7`) has **not** been made yet. That token can only be minted by its owner, so we need test USDT from the organisers. The relayer and app still point at our own `TestUSDC`, which does not count for the track.
 - The smoke-test wallet uses a generated fake card, not a real bank card.

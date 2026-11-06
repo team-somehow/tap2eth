@@ -1,9 +1,14 @@
 // Talks to a contactless EMV bank card over the phone's NFC (ISO-DEP), rebuilds the card's RSA
 // public key from its certificate chain, and asks the card to sign a 4-byte challenge (DDA).
 // Card data (PAN, certificates) stays in memory; only the public key and signature leave this file.
-import NfcManager, { NfcTech } from "react-native-nfc-manager";
 import { sha1 } from "@noble/hashes/legacy.js";
 import CAPK from "./capk.json";
+import { DEMO, demoCard } from "./demo";
+
+// react-native-nfc-manager throws when imported without its native module (Expo Go), so in demo mode we never load it.
+const Nfc = DEMO ? null : require("react-native-nfc-manager");
+const NfcManager = Nfc && Nfc.default;
+const NfcTech = Nfc && Nfc.NfcTech;
 
 const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("");
 const fromHex = (h) => Uint8Array.from(h.match(/../g).map((b) => parseInt(b, 16)));
@@ -144,6 +149,7 @@ let started = false;
  * `getChallenge(cardKey)` may call the server while the card is still on the phone.
  */
 export async function withCard(getChallenge) {
+  if (DEMO) return demoCard(getChallenge); // no NFC here (Expo Go): fake card, see lib/demo.js
   if (!started) { await NfcManager.start(); started = true; }
   if (!(await NfcManager.isEnabled())) throw new Error("Turn on NFC in your phone's settings.");
   try {
@@ -159,4 +165,4 @@ export async function withCard(getChallenge) {
   }
 }
 
-export const cancelCard = () => NfcManager.cancelTechnologyRequest().catch(() => {});
+export const cancelCard = () => (DEMO ? Promise.resolve() : NfcManager.cancelTechnologyRequest().catch(() => {}));
