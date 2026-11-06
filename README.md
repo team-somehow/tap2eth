@@ -43,6 +43,59 @@ All addresses are in [`contracts/deployments/`](contracts/deployments/). To chec
 
 These ran on earlier deployments of the factories above; older addresses are kept under `v2History` and `swapHistory` in [`contracts/deployments/`](contracts/deployments/).
 
+## Uniswap integration (Ethereum Sepolia)
+
+A Tap2ETH wallet can hold ETH and pay a shop that only wants USDT. The wallet swaps its own ETH on **Uniswap v3** and makes the merchant the swap's recipient, so the merchant receives exactly the USDT amount, in one transaction, approved by card and fingerprint like any other payment.
+
+### Where to look
+
+| What | Where |
+|---|---|
+| The Uniswap router interface we call (`exactOutputSingle`, `refundETH`) | [`Tap2EthSwap.sol` L8–21](contracts/contracts/swap/Tap2EthSwap.sol#L8-L21) |
+| `payWithSwap`: checks the card and phone signatures and the limits, then swaps | [`Tap2EthSwap.sol` L121](contracts/contracts/swap/Tap2EthSwap.sol#L121) |
+| **The Uniswap call:** `router.exactOutputSingle{value: maxEthIn}(…)` with the merchant as recipient, then `router.refundETH()` for the unused ETH | [`Tap2EthSwap.sol` L146–152](contracts/contracts/swap/Tap2EthSwap.sol#L146-L152) |
+| The hash the signers approve: it binds the merchant, the USDT amount, the most ETH to spend and the pool fee | [`Tap2EthSwap.sol` L109](contracts/contracts/swap/Tap2EthSwap.sol#L109) |
+| The swap wallet and its factory | [L28](contracts/contracts/swap/Tap2EthSwap.sol#L28) and [L159](contracts/contracts/swap/Tap2EthSwap.sol#L159) |
+| **The price quote:** Uniswap `QuoterV2.quoteExactOutputSingle` for every fee tier at once, cheapest wins, 1% slippage cap | [`server.v2.js` L118–141](relayer/server.v2.js#L118-L141) (`quoteSwap`, L124) |
+| Quote before the tap, and the swap setup | [`/api/quote` L497](relayer/server.v2.js#L497), [`/api/swap/start` L505](relayer/server.v2.js#L505) |
+| When a payment swaps: USDT from the wallet if it has enough, otherwise the ETH is swapped | [`server.v2.js` L378–395](relayer/server.v2.js#L378-L395) and the `payWithSwap` call at [L517](relayer/server.v2.js#L517) |
+| Deployment of the swap factory on Sepolia | [`deploySwap.js`](contracts/scripts/deploySwap.js), result in [`deployments/11155111.json`](contracts/deployments/11155111.json) |
+| The first proof of concept, a plain script | [`uniswap-poc/swap.mjs`](uniswap-poc/swap.mjs) |
+
+### Uniswap contracts used (Ethereum Sepolia)
+
+| Contract | Address |
+|---|---|
+| SwapRouter02 | [`0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E`](https://sepolia.etherscan.io/address/0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E) |
+| QuoterV2 | [`0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3`](https://sepolia.etherscan.io/address/0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3) |
+| WETH | [`0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`](https://sepolia.etherscan.io/address/0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14) |
+| USDT (Uniswap's Sepolia test token, 6 decimals) | [`0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0`](https://sepolia.etherscan.io/address/0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0) |
+
+The WETH/USDT pools at the 0.05%, 0.3% and 1% fee tiers all exist on Sepolia; the code asks all three and takes the cheapest for the payer.
+
+### How a payment runs
+
+1. The shop asks for an amount in USDT. The relayer asks Uniswap's QuoterV2 how much ETH that exact USDT costs.
+2. The customer taps the card. The card signs the first 4 bytes of a hash that includes the merchant, the USDT amount, the maximum ETH and the fee tier.
+3. The phone shows "You pay about X ETH, swapped on Uniswap" and signs the full hash with the fingerprint.
+4. `payWithSwap` verifies both signatures and the limits (counted in USDT), then calls `exactOutputSingle` with the merchant as recipient and `refundETH`. The merchant gets exactly the USDT amount; the customer pays at most the quoted ETH plus 1%.
+
+### Evidence
+
+- A plain-script swap, 0.1 USDT for ETH, merchant as recipient: [tx](https://sepolia.etherscan.io/tx/0xc2d7ba5aa333bbfbc9c99ac462c2db9bf45c48f7b2b36f4adc054ccbfd38e13c).
+- The same swap done by a Tap2ETH smart wallet through `payWithSwap`: [0.5 USDT for 0.000000252 ETH](https://sepolia.etherscan.io/tx/0xb31ce1ac31f322d57bca03fa51646e81a7068a132f29595478f6b6518d0da29e).
+- Contract tests against the real Sepolia pool on a fork: [`Tap2EthSwap.test.js`](contracts/test/Tap2EthSwap.test.js) (exact USDT out, ETH refund, signatures, limits, replay, expiry, slippage). ETH send, receive and limits: [`Tap2EthSwapEth.test.js`](contracts/test/Tap2EthSwapEth.test.js).
+- [`relayer/scripts/e2e-swap.js`](relayer/scripts/e2e-swap.js): 28 checks on real Sepolia with a fake card and phone. It covers shop payments paid by swap and from USDT, the Swap button, ETH and USDT sends, the progress steps and the limits.
+
+### Limits, honestly
+
+- Sepolia's test pools are thin and priced oddly (0.1 USDT costs about 0.00000005 ETH), so demo amounts are small.
+- We call the v3 contracts directly (SwapRouter02 and QuoterV2) because the swap has to run inside a smart-contract wallet. We did not use the Uniswap Trading API, v4 or hooks.
+- The Sepolia swap factory's source is not verified on Etherscan yet.
+- The swap-progress screen on the Pi terminal was checked in a browser against a mock, not yet with a real swap on the hardware.
+
+See [`FEEDBACK.md`](FEEDBACK.md) for what building this was like.
+
 ## Repository
 
 | Folder | What's inside |

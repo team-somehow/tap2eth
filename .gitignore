@@ -31,3 +31,9 @@ mobile/.env
 mobile/.env.*
 pi/.env
 /tap2eth.zip
+
+# Relayer runtime state (wallet addresses, history, scan cursors), one file per network
+relayer/state*.json
+relayer/.env*
+# Built APKs (the switchable app and the per-network variants)
+/tap2eth*.apk
