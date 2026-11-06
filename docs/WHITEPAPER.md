@@ -64,24 +64,38 @@ EMV is documented; nothing on the card is modified or bypassed. What was missing
 The reader runs a short, fixed command sequence (APDUs over ISO-DEP [16]). Each step either finds the payment application, collects the certificates, or asks for a signature.
 
 ```mermaid
-sequenceDiagram
-    box rgb(233,236,239) Reader
-    participant R as Reader
+flowchart TB
+    subgraph S1["1. Find the payment app"]
+        direction LR
+        R1["Reader sends<br/>SELECT PPSE 2PAY.SYS.DDF01"]:::reader --> C1["Card returns<br/>list of payment apps (AIDs)"]:::card
     end
-    box rgb(255,236,153) Bank card
-    participant C as Card
+    subgraph S2["2. Open the Mastercard app"]
+        direction LR
+        R2["Reader sends<br/>SELECT AID A0000000041010"]:::reader --> C2["Card returns<br/>app info and PDOL"]:::card
     end
-    R->>C: 1. SELECT PPSE "2PAY.SYS.DDF01"
-    C-->>R: list of payment apps (AIDs)
-    R->>C: 2. SELECT AID A0000000041010
-    C-->>R: app info plus PDOL (data it wants)
-    R->>C: 3. GET PROCESSING OPTIONS, amount zero
-    C-->>R: AIP and AFL (which records to read)
-    R->>C: 4. READ RECORD, once per AFL record
-    C-->>R: CA key index, issuer cert, card cert, exponents
-    Note over R: 5. Verify certificate chain offline
-    R->>C: 6. INTERNAL AUTHENTICATE with 4-byte challenge
-    C-->>R: SDAD, the card's RSA signature
+    subgraph S3["3. Start a zero-amount session"]
+        direction LR
+        R3["Reader sends<br/>GET PROCESSING OPTIONS, amount zero"]:::reader --> C3["Card returns<br/>AIP and AFL (records to read)"]:::card
+    end
+    subgraph S4["4. Read keys and certificates"]
+        direction LR
+        R4["Reader sends<br/>READ RECORD, once per AFL record"]:::reader --> C4["Card returns<br/>CA key index, bank cert,<br/>card cert, exponents"]:::card
+    end
+    subgraph S5["5. Check the chain offline"]
+        direction LR
+        R5["Reader verifies<br/>CA key, then bank key, then card key"]:::reader
+    end
+    subgraph S6["6. Sign our challenge"]
+        direction LR
+        R6["Reader sends<br/>INTERNAL AUTHENTICATE, 4-byte challenge"]:::reader --> C6["Card returns<br/>SDAD, its RSA signature"]:::card
+    end
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6
+
+    classDef card fill:#ffec99,stroke:#f08c00,stroke-width:2px,color:#1e1e1e
+    classDef reader fill:#e9ecef,stroke:#495057,stroke-width:2px,color:#1e1e1e
+    classDef phone fill:#a5d8ff,stroke:#1971c2,stroke-width:2px,color:#1e1e1e
+    classDef chain fill:#d0bfff,stroke:#6741d9,stroke-width:2px,color:#1e1e1e
+    classDef relayer fill:#ffc9c9,stroke:#e03131,stroke-width:2px,color:#1e1e1e
 ```
 
 | Step | Command bytes | Card returns |

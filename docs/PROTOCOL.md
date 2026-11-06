@@ -164,29 +164,38 @@ IA-DDA applies to cards answering INTERNAL AUTHENTICATE with a format-05 SDAD. T
 A conforming Reader MUST send these commands, in this order, and no others (apart from ISO-DEP control blocks).
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    box rgb(233,236,239) Reader side
-    participant R as Reader
+flowchart TB
+    subgraph S1["1. SELECT PPSE"]
+        direction LR
+        R1["Reader<br/>SELECT 2PAY.SYS.DDF01"]:::reader --> C1["Card<br/>FCI with AIDs (4F), priority (87), SW 90 00"]:::card
     end
-    box rgb(255,236,153) Bank card
-    participant C as Card
+    subgraph S2["2. SELECT AID"]
+        direction LR
+        R2["Reader<br/>SELECT AID, RID A000000003 or A000000004"]:::reader --> C2["Card<br/>FCI with PDOL (9F38), SW 90 00"]:::card
     end
-    R->>C: SELECT PPSE 2PAY.SYS.DDF01
-    C-->>R: FCI with AIDs (4F) and priority (87), SW 90 00
-    R->>C: SELECT AID (RID A000000003 or A000000004)
-    C-->>R: FCI with PDOL (9F38), SW 90 00
-    R->>C: GET PROCESSING OPTIONS (PDOL data, amount zero)
-    C-->>R: AIP (82) and AFL (94), in tag 77 or tag 80
-    loop each AFL entry, each record
-        R->>C: READ RECORD (record r, SFI)
-        C-->>R: 8F, 90, 92, 9F32, 9F46, 9F47, 9F48, 9F4A, 5A
+    subgraph S3["3. GET PROCESSING OPTIONS"]
+        direction LR
+        R3["Reader<br/>GPO with PDOL data, amount zero"]:::reader --> C3["Card<br/>AIP (82) and AFL (94), in tag 77 or 80"]:::card
     end
-    Note over R: Attestation (4.6) gives Card Key (n, e)
-    loop each piece j = 0 to k-1, same card session
-        R->>C: INTERNAL AUTHENTICATE 00 88 00 00 04 P_j 00
-        C-->>R: SDAD, N bytes (tag 80, or 9F4B inside 77)
+    subgraph S4["4. READ RECORD, each AFL record"]
+        direction LR
+        R4["Reader<br/>READ RECORD (record r, SFI)"]:::reader --> C4["Card<br/>8F, 90, 92, 9F32, 9F46, 9F47, 9F48, 9F4A, 5A"]:::card
     end
+    subgraph S5["5. Attestation, section 4.6"]
+        direction LR
+        R5["Reader<br/>validates the chain, gets Card Key (n, e)"]:::reader
+    end
+    subgraph S6["6. INTERNAL AUTHENTICATE, each piece j = 0 to k-1"]
+        direction LR
+        R6["Reader<br/>00 88 00 00 04 P_j 00"]:::reader --> C6["Card<br/>SDAD, N bytes (tag 80, or 9F4B in 77)"]:::card
+    end
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6
+
+    classDef card fill:#ffec99,stroke:#f08c00,stroke-width:2px,color:#1e1e1e
+    classDef reader fill:#e9ecef,stroke:#495057,stroke-width:2px,color:#1e1e1e
+    classDef phone fill:#a5d8ff,stroke:#1971c2,stroke-width:2px,color:#1e1e1e
+    classDef chain fill:#d0bfff,stroke:#6741d9,stroke-width:2px,color:#1e1e1e
+    classDef relayer fill:#ffc9c9,stroke:#e03131,stroke-width:2px,color:#1e1e1e
 ```
 
 | # | Command | Bytes | Reader action on response |
@@ -1043,24 +1052,22 @@ Participants: **Card**, **Reader**, **Terminal**, **Approver**, **Relayer**, **C
 #### 6.8.1 Signup
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant Card
-    participant A as Approver
-    participant L as Relayer
-    participant W as Chain
-    A->>A: create or reuse Approver Key (x, y)
-    A->>Card: SELECT, GPO, READ RECORD, then attest
-    A->>L: POST signup/start (phoneX, phoneY, cardModulus, cardExponent)
-    L-->>A: id, hash, challenges, wallet, chainId, params
-    A->>W: read registry, implementation, chainId
-    A->>A: recompute predicted wallet and H_create, compare
-    A->>Card: INTERNAL AUTHENTICATE bytes4(H)
-    Card-->>A: SDAD
-    A->>A: show network, limits, delay, address, then biometric and sign H
-    A->>L: POST signup/id (cardSig, phoneSig)
-    L->>W: simulate, then createWallet
-    L-->>A: wallet, txHash
+flowchart TD
+    A1["1. Approver<br/>creates or reuses Approver Key (x, y)"]:::phone
+    A2["2. Card on the Approver<br/>SELECT, GPO, READ RECORD, then attest"]:::card
+    A3["3. Relayer, POST signup/start<br/>phoneX, phoneY, cardModulus, cardExponent<br/>returns id, hash, challenges, wallet, chainId, params"]:::relayer
+    A4["4. Approver reads the chain<br/>registry, implementation, chainId<br/>recomputes predicted wallet and H_create, compares"]:::chain
+    A5["5. Card<br/>INTERNAL AUTHENTICATE bytes4(H), returns SDAD"]:::card
+    A6["6. Approver<br/>shows network, limits, delay, address<br/>biometric, signs H"]:::phone
+    A7["7. Relayer, POST signup/id<br/>cardSig, phoneSig"]:::relayer
+    A8["8. Chain<br/>simulate, then createWallet<br/>returns wallet, txHash"]:::chain
+    A1 --> A2 --> A3 --> A4 --> A5 --> A6 --> A7 --> A8
+
+    classDef card fill:#ffec99,stroke:#f08c00,stroke-width:2px,color:#1e1e1e
+    classDef reader fill:#e9ecef,stroke:#495057,stroke-width:2px,color:#1e1e1e
+    classDef phone fill:#a5d8ff,stroke:#1971c2,stroke-width:2px,color:#1e1e1e
+    classDef chain fill:#d0bfff,stroke:#6741d9,stroke-width:2px,color:#1e1e1e
+    classDef relayer fill:#ffc9c9,stroke:#e03131,stroke-width:2px,color:#1e1e1e
 ```
 
 The card stays in the field while the Approver contacts the Relayer, so signup is one tap.
@@ -1068,31 +1075,26 @@ The card stays in the field while the Approver contacts the Relayer, so signup i
 #### 6.8.2 Merchant payment (card + Approver)
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant Card
-    participant R as Reader
-    participant T as Terminal
-    participant L as Relayer
-    participant A as Approver
-    participant W as Chain
-    T->>T: show amount and merchant
-    Card->>R: tap, read and attest
-    R->>T: CARD rid n e
-    T->>W: walletOf, signer id, nonce, frozen, limits, challengeUsed
-    T->>T: build intent, expiry = now + TTL, compute H_pay
-    T->>R: SIGN bytes4(H)
-    R->>Card: INTERNAL AUTHENTICATE
-    R->>T: SIG sdad
-    T->>L: POST pay/tapped (cardModulus, cardId, intent, hash, cardSig)
-    L-->>T: Session waiting_for_phone
-    A->>L: poll wallet view, sees pending Session
-    A->>W: read nonce, recompute H, compare
-    A->>A: show amount, receiver, network, expiry, then biometric
-    A->>L: POST pay/id/phone (phoneSig)
-    L->>W: simulate, then pay with sorted sigs
-    T->>L: GET pay/id, status paid with txHash
-    T->>W: verify receipt contains Paid, then show Paid
+flowchart TD
+    P1["1. Terminal<br/>shows amount and merchant"]:::reader
+    P2["2. Card tapped on Reader<br/>read records and attest"]:::card
+    P3["3. Reader to Terminal<br/>CARD rid n e"]:::reader
+    P4["4. Terminal reads the chain<br/>walletOf, signer id, nonce, frozen, limits, challengeUsed"]:::chain
+    P5["5. Terminal<br/>builds Intent, expiry = now + TTL, computes H_pay"]:::reader
+    P6["6. Card signs<br/>SIGN bytes4(H), INTERNAL AUTHENTICATE, SIG sdad"]:::card
+    P7["7. Relayer, POST pay/tapped<br/>cardModulus, cardId, intent, hash, cardSig<br/>Session waiting_for_phone"]:::relayer
+    P8["8. Approver<br/>sees pending Session, reads nonce, recomputes H"]:::phone
+    P9["9. Approver<br/>shows amount, receiver, network, expiry<br/>biometric, POST pay/id/phone"]:::phone
+    P10["10. Relayer<br/>simulates, then calls pay with sorted sigs"]:::relayer
+    P11["11. Chain<br/>verifies both signatures and rules, emits Paid"]:::chain
+    P12["12. Terminal<br/>GET pay/id, checks receipt has Paid, shows Paid"]:::reader
+    P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> P9 --> P10 --> P11 --> P12
+
+    classDef card fill:#ffec99,stroke:#f08c00,stroke-width:2px,color:#1e1e1e
+    classDef reader fill:#e9ecef,stroke:#495057,stroke-width:2px,color:#1e1e1e
+    classDef phone fill:#a5d8ff,stroke:#1971c2,stroke-width:2px,color:#1e1e1e
+    classDef chain fill:#d0bfff,stroke:#6741d9,stroke-width:2px,color:#1e1e1e
+    classDef relayer fill:#ffc9c9,stroke:#e03131,stroke-width:2px,color:#1e1e1e
 ```
 
 If the Terminal cannot read chain state, it calls `POST /api/pay/start`, recomputes `H` from the returned intent and its own amount and Receiver, has the card sign, and sends `POST /api/pay/{id}/card`.
