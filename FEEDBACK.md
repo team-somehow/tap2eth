@@ -6,7 +6,7 @@
 
 ## What worked well
 
-- **Exact-output swaps fit our case perfectly.** A shop asks for "0.10 USDT", not "whatever my ETH buys". `exactOutputSingle` with `amountInMaximum` gave us "the merchant gets exactly X, the customer pays at most Y" with no extra logic.
+- **Exact-output swaps fit our case perfectly.** A merchant asks for "0.10 USDT", not "whatever my ETH buys". `exactOutputSingle` with `amountInMaximum` gave us "the merchant gets exactly X, the customer pays at most Y" with no extra logic.
 - **Real pools on Sepolia.** The v3 router, quoter, WETH and a WETH/USDT pool at all three fee tiers (0.05%, 0.3%, 1%) already exist there, so we could build and test against real Uniswap without deploying our own pools.
 - **Forking Sepolia in Hardhat** let us test the wallet against the real router and pool (exact USDT out, ETH refund, replay, expiry, slippage reverts) instead of mocks.
 - **Paying with native ETH** (send `msg.value` to the router, let it wrap, call `refundETH`) means the wallet never has to hold WETH or give an approval.

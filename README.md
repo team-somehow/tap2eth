@@ -45,7 +45,7 @@ These ran on earlier deployments of the factories above; older addresses are kep
 
 ## Uniswap integration (Ethereum Sepolia)
 
-A Tap2ETH wallet can hold ETH and pay a shop that only wants USDT. The wallet swaps its own ETH on **Uniswap v3** and makes the merchant the swap's recipient, so the merchant receives exactly the USDT amount, in one transaction, approved by card and fingerprint like any other payment.
+A Tap2ETH wallet can hold ETH and pay a merchant that only wants USDT. The wallet swaps its own ETH on **Uniswap v3** and makes the merchant the swap's recipient, so the merchant receives exactly the USDT amount, in one transaction, approved by card and fingerprint like any other payment.
 
 ### Where to look
 
@@ -75,7 +75,7 @@ The WETH/USDT pools at the 0.05%, 0.3% and 1% fee tiers all exist on Sepolia; th
 
 ### How a payment runs
 
-1. The shop asks for an amount in USDT. The relayer asks Uniswap's QuoterV2 how much ETH that exact USDT costs.
+1. The merchant asks for an amount in USDT. The relayer asks Uniswap's QuoterV2 how much ETH that exact USDT costs.
 2. The customer taps the card. The card signs the first 4 bytes of a hash that includes the merchant, the USDT amount, the maximum ETH and the fee tier.
 3. The phone shows "You pay about X ETH, swapped on Uniswap" and signs the full hash with the fingerprint.
 4. `payWithSwap` verifies both signatures and the limits (counted in USDT), then calls `exactOutputSingle` with the merchant as recipient and `refundETH`. The merchant gets exactly the USDT amount; the customer pays at most the quoted ETH plus 1%.
@@ -85,7 +85,7 @@ The WETH/USDT pools at the 0.05%, 0.3% and 1% fee tiers all exist on Sepolia; th
 - A plain-script swap, 0.1 USDT for ETH, merchant as recipient: [tx](https://sepolia.etherscan.io/tx/0xc2d7ba5aa333bbfbc9c99ac462c2db9bf45c48f7b2b36f4adc054ccbfd38e13c).
 - The same swap done by a Tap2ETH smart wallet through `payWithSwap`: [0.5 USDT for 0.000000252 ETH](https://sepolia.etherscan.io/tx/0xb31ce1ac31f322d57bca03fa51646e81a7068a132f29595478f6b6518d0da29e).
 - Contract tests against the real Sepolia pool on a fork: [`Tap2EthSwap.test.js`](contracts/test/Tap2EthSwap.test.js) (exact USDT out, ETH refund, signatures, limits, replay, expiry, slippage). ETH send, receive and limits: [`Tap2EthSwapEth.test.js`](contracts/test/Tap2EthSwapEth.test.js).
-- [`relayer/scripts/e2e-swap.js`](relayer/scripts/e2e-swap.js): 28 checks on real Sepolia with a fake card and phone. It covers shop payments paid by swap and from USDT, the Swap button, ETH and USDT sends, the progress steps and the limits.
+- [`relayer/scripts/e2e-swap.js`](relayer/scripts/e2e-swap.js): 28 checks on real Sepolia with a fake card and phone. It covers merchant payments paid by swap and from USDT, the Swap button, ETH and USDT sends, the progress steps and the limits.
 
 ### Limits, honestly
 
