@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import signal
 import sys
@@ -243,8 +244,11 @@ class Terminal:
     def setup_edge(self):
         """Read the chain ourselves for each tap. Without it (old relayer, chain down) payments use the relayer's checks."""
         self.edge_tried = time.monotonic()
+        url = self.relayer_url()
         try:
             cfg = self.post("/api/terminal/config")
+            if self.relayer_url() != url:
+                return  # the network was switched while we waited: this answer is from the old one, drop it
             self.set(network=cfg.get("name") or "")
             if cfg.get("mode") == "swap":
                 # Ethereum Sepolia: a payment can be an ETH to USDT swap on Uniswap, whose hash needs a live quote. So this
@@ -262,6 +266,8 @@ class Terminal:
             self.edge = Edge(rpc, cfg)
             print(f"terminal checks payments itself on chain {cfg['chainId']} via {rpc.split('/')[2]}", flush=True)
         except Exception as e:  # noqa: BLE001 - an old relayer has no /api/terminal/config; that's fine
+            if self.relayer_url() != url:
+                return
             self.edge = None
             self.set(powered="", swap=None)
             print(f"terminal-side checks off, using the relayer's: {e}", flush=True)
@@ -286,15 +292,18 @@ class Terminal:
     def switch_network(self, net_id):
         if self.state["mode"] != "idle":
             raise RuntimeError("Finish or cancel the current payment first.")
-        info = self.networks()
-        match = next((n for n in info["networks"] if n["id"] == net_id), None)
-        if match is None:
+        if not re.fullmatch(r"[a-z]{3,20}", net_id or ""):
             raise RuntimeError("Unknown network.")
+        # The route is the network's id ("/sepolia"). The list from the backend only supplies the display name: if it is
+        # slow to answer over the tunnel, the switch must still work, so it never depends on that answer.
+        match = next((n for n in self.networks()["networks"] if n["id"] == net_id), None)
+        route = match["route"] if match else "/" + net_id
+        name = match["name"] if match else net_id
         base, _ = self._split_url()
         with open(RELAYER_FILE, "w") as f:
-            f.write(base + match["route"])
+            f.write(base + route)
         self.edge = None
-        self.set(powered="", swap=None, network=match["name"])
+        self.set(powered="", swap=None, network=name)
         threading.Thread(target=self.setup_edge, daemon=True).start()  # picks up the new network's currency and badge
 
     def post(self, path, body=None):
@@ -551,6 +560,18 @@ def _fields(line):
     return [p.replace("\\:", ":") for p in re.split(r"(?<!\\):", line)]
 
 
+def local_ip():
+    """The address this device has on the network it is connected to (what you ssh to). '' when offline."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))  # a UDP "connect" sends nothing; it only picks the outgoing interface
+        ip = s.getsockname()[0]
+        s.close()
+        return "" if ip.startswith("127.") else ip
+    except OSError:
+        return ""
+
+
 def wifi_scan(rescan=False):
     fields = ["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan"]
     try:
@@ -570,7 +591,7 @@ def wifi_scan(rescan=False):
         if ssid not in nets or signal > nets[ssid]["signal"]:
             nets[ssid] = {"ssid": ssid, "signal": signal, "secure": secure}
     nets = sorted(nets.values(), key=lambda n: (n["ssid"] != current, -n["signal"]))
-    return {"current": current, "networks": nets}
+    return {"current": current, "networks": nets, "ip": local_ip()}
 
 
 def _saved_profile(ssid):
@@ -674,7 +695,7 @@ def make_handler(term):
                     wifi_connect(ssid, pw)
                 except WifiError as e:
                     return self._json({"error": str(e)}, 400)
-                return self._json({"ok": True, "current": ssid})
+                return self._json({"ok": True, "current": ssid, "ip": local_ip()})
             elif self.path == "/network":
                 if not self._local():
                     return self._json({"error": "Settings work on the terminal's own screen only."}, 403)

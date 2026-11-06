@@ -41,7 +41,7 @@ Every user gets a smart-contract wallet (a cheap clone) that is controlled by th
 
 | Feature | Status | Evidence |
 |---|---|---|
-| **Smart wallet per user, card + phone multisig (2 of N)** | Deployed, source verified | Latest factory [`0x15571a05…7dcB`](https://explorer.testnet.whitechain.io/address/0x15571a053040dB029958Ee5527B72652964E7dcB?tab=txs) |
+| **Smart wallet per user, card + phone multisig (2 of N)** | Deployed, source verified | Latest factory [`0xb413D6AA…557A`](https://explorer.testnet.whitechain.io/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A?tab=txs) |
 | **More cards, 2 of 3 and 3 of 3, daily and per-payment limits, card-only tiny payments, freeze** | Tested live on the latest factory | Live smoke test `contracts/scripts/smokeV2.js`: 36 of 36 checks |
 | **Receive USDT** | Done with the track USDT | 0.2 USDT and 0.1 USDT arrived in a real wallet: [tx 1](https://explorer.testnet.whitechain.io/tx/0x38328f5a536c14063e6cf9a3a202f0febc4359e6b97b00e132bcba17d12248d8), [tx 2](https://explorer.testnet.whitechain.io/tx/0xe0855dc48cd9b18c596bb3068a7975390eeeed133aae41db510785e3a72a6650). The app shows them under Activity as "Received". |
 | **Send USDT to any address, card + fingerprint** | Done with a real bank card and a real phone, with the track USDT | 0.3 USDT sent from a smart wallet: [tx](https://explorer.testnet.whitechain.io/tx/0x31945fb2ff21ecd3f123011690a0481a6f8fcf0f0a46db9fb27fd2a84e7d2eea). That wallet came from the earlier v2 factory (`0xFB39…5A61`). On the latest factory, Send passes the relayer test (37 of 37 on Whitechain, with a throwaway token). |
@@ -85,8 +85,8 @@ valid signatures and false for wrong ones.
 
 | v2 on Whitechain Sepolia (latest, with two-card phone recovery) | Address | Source verified |
 |---|---|---|
-| `Tap2EthFactoryV2` | [`0x15571a053040dB029958Ee5527B72652964E7dcB`](https://explorer.testnet.whitechain.io/address/0x15571a053040dB029958Ee5527B72652964E7dcB#code) | Yes |
-| `Tap2EthWalletV2` (implementation) | [`0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1`](https://explorer.testnet.whitechain.io/address/0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1#code) | Yes |
+| `Tap2EthFactoryV2` | [`0xb413D6AA35c3901Bac6D441e8f1b38640416557A`](https://explorer.testnet.whitechain.io/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A#code) | Yes |
+| `Tap2EthWalletV2` (implementation) | [`0x75572741C89B0665fB3A30473B831f0e83153b88`](https://explorer.testnet.whitechain.io/address/0x75572741C89B0665fB3A30473B831f0e83153b88#code) | Yes |
 | Smoke-test wallet (fake cards, throwaway token), latest run | [`0x14d0617f1c7AEC1a848a3698045f4726BC3Fe2Ec`](https://explorer.testnet.whitechain.io/address/0x14d0617f1c7AEC1a848a3698045f4726BC3Fe2Ec) | Clone of the implementation |
 
 **Also on Arc testnet (chain ID 5042002, gas paid in USDC):** one contract, `Tap2Eth` (registry + wallet logic, wallets are clones of it),
@@ -95,7 +95,7 @@ A card + phone payment of 0.01 USDC settled there:
 [tx](https://explorer.testnet.arc.io/tx/0x7cbb741be0aa18738188bc204898fba6707c22557bcabd51e148e4d478002c8b).
 Choose the chain with `NETWORK=arc|whitechain` in `.env`. Details and how to verify: [`contracts/README.md`](contracts/README.md).
 
-The earlier v2 deployment (without phone recovery, factory `0xFB395D511b5dc33DE8488D936Ac8814166D95A61`) is kept in `contracts/deployments/1874.json` under `v2History`.
+**Fresh deployment (2026-11-06 UTC, tx [`0xc2524ba1…3efd`](https://explorer.testnet.whitechain.io/tx/0xc2524ba1e0798fe95b10431d5edc7aebd59c445fe118b1488811c54dbe723efd), 5,060,414 gas).** The factory and wallet implementation above are a new deployment of the same `Tap2EthV2.sol`, so every card starts with no wallet and one card gives one new wallet. Both are source-verified. The earlier v2 factories (`0xFB395D51…5A61`, `0x15571a05…7dcB`) are kept in `contracts/deployments/1874.json` under `v2History`; wallets created on them are not known to the latest factory. The feature evidence in the table above (limits, recovery, USDT receive and send) was produced on those earlier deployments with identical contract source; it has not been re-run on the fresh one.
 
 **v3 (written, tested, not deployed):** `contracts/contracts/v3/Tap2EthV3.sol` makes the same phone recovery stronger. Each card signs three 4-byte pieces of the request hash (12 bytes instead of 4) and the one-piece route is switched off. Reason: a card signs only 4 bytes, and the signatures a card made earlier (for example when it was added) are public on-chain. Someone holding one stolen card could look for a recovery request whose hash starts with the same 4 bytes as an old signature of the other card (about 2^32 tries) and sign it with the stolen card, so the second card never has to be present. Only the delay and the old phone's cancel would stop that. With three pieces that replay is not realistic. This analysis has not been independently reviewed.
 

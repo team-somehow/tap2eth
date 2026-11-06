@@ -4,16 +4,22 @@
   "factory": "0xBeC6E6382477263f17A90145a5c569264C153A76",
   "factoryTx": "0xf318d50013e7cb7282bf7fcc29ae3783cf42e0aacc5f5b6ee9f4d73d7b4cb114",
   "deployedAt": "2026-11-05T20:55:15.809Z",
-  "factoryV2": "0x15571a053040dB029958Ee5527B72652964E7dcB",
-  "walletImplementationV2": "0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1",
-  "factoryV2Tx": "0x67310ad6647ecd6f7d73941abdcc18028a9598c9421c719ce854d271efd3cb4c",
-  "v2DeployedAt": "2026-11-06T06:36:44.551Z",
+  "factoryV2": "0xb413D6AA35c3901Bac6D441e8f1b38640416557A",
+  "walletImplementationV2": "0x75572741C89B0665fB3A30473B831f0e83153b88",
+  "factoryV2Tx": "0xc2524ba1e0798fe95b10431d5edc7aebd59c445fe118b1488811c54dbe723efd",
+  "v2DeployedAt": "2026-11-06T20:07:04.391Z",
   "v2History": [
     {
       "factoryV2": "0xFB395D511b5dc33DE8488D936Ac8814166D95A61",
       "walletImplementationV2": "0x76FDa4413bc97b338c6393C1621DFE4aab89f45C",
       "factoryV2Tx": "0xec2b501c54bc0073391f7aaa3186ba798814f4eef9ce9a7d077b4d855dc1de06",
       "deployedAt": "2026-11-06T01:10:25.564Z"
+    },
+    {
+      "factoryV2": "0x15571a053040dB029958Ee5527B72652964E7dcB",
+      "walletImplementationV2": "0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1",
+      "factoryV2Tx": "0x67310ad6647ecd6f7d73941abdcc18028a9598c9421c719ce854d271efd3cb4c",
+      "deployedAt": "2026-11-06T06:36:44.551Z"
     }
   ]
 }

@@ -32,10 +32,11 @@
     .entry-left { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; }
     /* café header: hold it for 2 seconds to open settings */
     #merchant { display: flex; align-items: center; gap: 9px; padding: 2px 0; touch-action: none; }
-    .powered { font: 600 11px/1 ui-monospace, Menlo, monospace; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted, #8A8A8A); text-align: center; margin-bottom: -4px; }
-    .powered { display: flex; align-items: center; justify-content: center; gap: 7px; }
+    .powered { font: 600 10px/1 ui-monospace, Menlo, monospace; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted, #8A8A8A); text-align: center; margin-bottom: -4px; }
+    .powered { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; }
+    .powered[hidden] { display: none; }  /* the line above would otherwise keep a hidden badge on screen */
     .powered b { color: var(--ink); font-weight: 700; display: inline-flex; align-items: center; }
-    .plogo { height: 13px; width: auto; display: block; }
+    .plogo { height: 17px; width: auto; display: block; }
     .brand-name { font-size: 16px; font-weight: 900; letter-spacing: -.2px; line-height: 1.1; }
     .cup { width: 30px; height: 30px; flex: none; overflow: visible; }
     .steam { fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linecap: round; opacity: 0; animation: steam 2.8s ease-in-out infinite; }
@@ -242,6 +243,7 @@
       <div class="msg" id="net-msg"></div>
 
       <div class="eyebrow" style="display:flex;justify-content:space-between;align-items:center"><span>Wi-Fi</span><button class="plain" id="wifi-rescan" style="font-size:12px;padding:0">Scan again</button></div>
+      <div class="panel" id="wifi-ip" style="margin-bottom:8px"><div class="row"><span class="grow">IP address</span><span class="note" id="ip-v" style="color:var(--ink);font-weight:800">…</span></div></div>
       <div class="panel" id="wifi-list"><div class="row"><span class="note">Looking for networks…</span></div></div>
       <div class="msg" id="wifi-msg"></div>
 
@@ -389,12 +391,13 @@
   const bars = (sig) => `<span class="bars">${[25, 50, 75].map((t, i) => `<i class="${sig >= t ? "on" : ""}" style="height:${5 + i * 4}px"></i>`).join("")}</span>`;
   const lock = '<svg class="lock" viewBox="0 0 12 14"><rect x="1" y="6" width="10" height="7" rx="1.5" fill="#0A0A0A"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" fill="none" stroke="#0A0A0A" stroke-width="1.6"/></svg>';
   let nets = [], current = null;
+  const showIp = (ip) => { $("ip-v").textContent = ip || "not connected"; };
   async function loadWifi(rescan) {
     $("wifi-list").innerHTML = `<div class="row"><span class="note">${rescan ? "Scanning…" : "Looking for networks…"}</span></div>`;
     try {
       const j = await (await fetch("/wifi" + (rescan ? "?rescan=1" : ""))).json();
       if (j.error) throw new Error(j.error);
-      nets = j.networks; current = j.current;
+      nets = j.networks; current = j.current; showIp(j.ip);
       drawWifi();
     } catch (e) {
       $("wifi-list").innerHTML = `<div class="row"><span class="note">${esc(e.message || "Couldn't list networks.")}</span></div>`;
@@ -451,7 +454,7 @@
     try {
       const j = await (await post("/wifi", { ssid, password })).json();
       if (j.error) throw new Error(j.error);
-      current = ssid; pw = "";
+      current = ssid; pw = ""; showIp(j.ip);
       $("m-join").classList.remove("on");
       $("wifi-msg").classList.remove("err"); $("wifi-msg").textContent = `Connected to ${ssid}.`;
       drawWifi();
@@ -534,6 +537,7 @@
     try { s = await (await fetch("/state")).json(); } catch { return; }
     if (s.cur && s.cur !== CUR) setCur(s.cur);
     $("powered").hidden = !s.powered;
+    if (!s.powered) { $("powered-name").innerHTML = ""; $("powered-name").dataset.n = ""; }  // forget the last logo, so nothing stale can show
     if (s.powered && $("powered-name").dataset.n !== s.powered) {
       $("powered-name").dataset.n = s.powered;
       if (LOGOS[s.powered]) $("powered-name").innerHTML = LOGOS[s.powered]; else $("powered-name").textContent = s.powered;

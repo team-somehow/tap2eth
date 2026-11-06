@@ -307,8 +307,8 @@ const GAS = [
   ['Freeze with the phone', '104,422'],
 ];
 const CONTRACTS = [
-  ['Tap2EthFactoryV2', 'Whitechain Sepolia', `${WC}/address/0x15571a053040dB029958Ee5527B72652964E7dcB#code`, '0x15571a053040dB029958Ee5527B72652964E7dcB'],
-  ['Tap2EthWalletV2', 'Whitechain Sepolia · implementation', `${WC}/address/0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1#code`, '0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1'],
+  ['Tap2EthFactoryV2', 'Whitechain Sepolia', `${WC}/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A#code`, '0xb413D6AA35c3901Bac6D441e8f1b38640416557A'],
+  ['Tap2EthWalletV2', 'Whitechain Sepolia · implementation', `${WC}/address/0x75572741C89B0665fB3A30473B831f0e83153b88#code`, '0x75572741C89B0665fB3A30473B831f0e83153b88'],
   ['Tap2Eth', 'Arc testnet', `${ARC}/address/0xd7783c67607704a19018015E184fFd008392A363?tab=contract`, '0xd7783c67607704a19018015E184fFd008392A363'],
 ];
 
@@ -463,7 +463,7 @@ function Footer() {
         <a className="brand" href="#top">Tap2ETH</a>
         <nav aria-label="Footer">
           <Ext href={GITHUB}>GitHub</Ext>
-          <Ext href={`${WC}/address/0x15571a053040dB029958Ee5527B72652964E7dcB`}>Whitechain factory</Ext>
+          <Ext href={`${WC}/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A`}>Whitechain factory</Ext>
           <Ext href={`${ARC}/address/0xd7783c67607704a19018015E184fFd008392A363`}>Arc contract</Ext>
         </nav>
         <small>Built at ETHGlobal Mumbai 2026 by team-somehow. Testnet software, not a bank product. Visa and Mastercard are trademarks of their owners; Tap2ETH isn't affiliated with them.</small>

@@ -35,8 +35,8 @@ Arc runs the card check (RSA through the modexp precompile) and the phone check 
 
 | | Address | Source |
 |---|---|---|
-| `Tap2EthFactoryV2` | [`0x15571a053040dB029958Ee5527B72652964E7dcB`](https://explorer.testnet.whitechain.io/address/0x15571a053040dB029958Ee5527B72652964E7dcB#code) | Verified |
-| `Tap2EthWalletV2` (implementation) | [`0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1`](https://explorer.testnet.whitechain.io/address/0x1E82f6FF110A43492f1ed2FaE0A1600d8D8314F1#code) | Verified |
+| `Tap2EthFactoryV2` | [`0xb413D6AA35c3901Bac6D441e8f1b38640416557A`](https://explorer.testnet.whitechain.io/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A#code) | Verified |
+| `Tap2EthWalletV2` (implementation) | [`0x75572741C89B0665fB3A30473B831f0e83153b88`](https://explorer.testnet.whitechain.io/address/0x75572741C89B0665fB3A30473B831f0e83153b88#code) | Verified |
 | Token (track USDT) | [`0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7`](https://explorer.testnet.whitechain.io/address/0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7) | n/a |
 
 Both lists are also in [`deployments/`](deployments/) (`5042002.json`, `1874.json`). The backend picks the
