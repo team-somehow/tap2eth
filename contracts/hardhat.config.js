@@ -33,7 +33,7 @@ module.exports = {
   },
   // Contract source verification on the Whitechain Blockscout explorer (the API key can be any non-empty string).
   etherscan: {
-    apiKey: { whitechainSepolia: "blockscout", arcTestnet: "blockscout" },
+    apiKey: { whitechainSepolia: "blockscout", arcTestnet: "blockscout", sepolia: process.env.ETHERSCAN_API_KEY || "" },
     customChains: [
       {
         network: "whitechainSepolia",
@@ -66,6 +66,12 @@ module.exports = {
       url: process.env.ARC_RPC_URL || "https://rpc.testnet.arc.network",
       chainId: 5042002,
       accounts: process.env.ARC_RELAYER_KEY ? [process.env.ARC_RELAYER_KEY] : [],
+    },
+    // Ethereum Sepolia (chain ID 11155111): Uniswap v3 swaps. Uses the same relayer key as Whitechain.
+    sepolia: {
+      url: process.env.SEPOLIA_RPC || "https://ethereum-sepolia-rpc.publicnode.com",
+      chainId: 11155111,
+      accounts: process.env.RELAYER_KEY ? [process.env.RELAYER_KEY] : [],
     },
     baseSepolia: {
       url: process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org",
