@@ -19,13 +19,29 @@ import hashlib
 import http.server
 import json
 import os
+import signal
+import sys
 import threading
 import time
 import urllib.request
 
 import serial
 
+from buzzer import DEFAULT_VOLUME, KINDS, SilentBuzzer, make_buzzer
+from melodies import KEY_NOTES, cue_for
+
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Loudness is a level from 0 (mute) to 10 (loudest), changed from the screen and remembered across restarts.
+MAX_LEVEL = 10
+VOLUME_FILE = os.path.expanduser("~/.tap2eth-volume")
+
+
+def load_level(default_percent):
+    try:
+        return max(0, min(MAX_LEVEL, int(open(VOLUME_FILE).read().strip())))
+    except (OSError, ValueError):
+        return max(0, min(MAX_LEVEL, round(default_percent / 10)))
 
 # Live payment-network CA public keys (public data, loaded into every card terminal).
 # Loaded from capk.txt (Proxmark3 format) at startup — see README for the download command.
@@ -125,8 +141,9 @@ def sdad_from(ia):
 # ------------------------------------------------------------------------------- relayer + state
 
 class Terminal:
-    def __init__(self, port, relayer, i2c_bus=None):
+    def __init__(self, port, relayer, i2c_bus=None, buzzer=None, level=5):
         self.relayer = relayer.rstrip("/")
+        self.buzzer = buzzer or SilentBuzzer()
         self.ser, self.reader = None, None
         if i2c_bus is not None:  # RFID reader wired straight to this machine's I2C (Raspberry Pi)
             from reader_i2c import I2CReader
@@ -138,22 +155,37 @@ class Terminal:
             self.ser.open()
         self.lock = threading.Lock()
         self.sig_event = threading.Event()
-        self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None}
+        self.state = {"mode": "idle", "screen": "Ready", "detail": "", "amount": None, "code": None, "tx": None, "ok": None, "volume": level}
         self._reset_tap()
+
+    def set_volume(self, level):
+        """Set the buzzer loudness (0 mute .. 10 loudest), remember it, and play a note so it can be heard."""
+        level = max(0, min(MAX_LEVEL, int(level)))
+        self.buzzer.set_volume(level * 10)
+        with self.lock:
+            self.state["volume"] = level
+        try:
+            with open(VOLUME_FILE, "w") as f:
+                f.write(str(level))
+        except OSError:
+            pass
+        self.buzzer.play("volume")
 
     def _reset_tap(self):
         self.aid, self.gpo, self.recs, self.ia = None, None, [], None
 
     def set(self, **kw):
         with self.lock:
+            before = dict(self.state)
             self.state.update(kw)
             s = dict(self.state)
+        self.buzzer.play(cue_for(before, s))
         # Mirror the status on the M5Stick's screen.
         color = "G" if s["ok"] is True else "R" if s["ok"] is False else "B" if s["mode"] in ("register", "waiting") else "Y" if s["mode"] == "pay" else "W"
         ascii_ = lambda t: "".join(ch for ch in str(t or "") if 32 <= ord(ch) < 127).replace("|", "/").strip()[:26]
         l1, l2 = ascii_(s["screen"]), ascii_(s["detail"])
         if s["mode"] == "waiting":
-            l1, l2 = "Approve on phone", f"{s['amount']} tUSDC"
+            l1, l2 = "Approve on phone", f"{s['amount']} USDT"
         try:
             self.write(f"SHOW {color}|{l1 or 'Tap2ETH'}|{l2}")
         except Exception:  # noqa: BLE001
@@ -170,7 +202,7 @@ class Terminal:
 
     # merchant actions
     def start_payment(self, amount):
-        self.set(mode="pay", amount=amount, screen=f"{amount} tUSDC", detail="Tap card", tx=None, ok=None, code=None)
+        self.set(mode="pay", amount=amount, screen=f"{amount} USDT", detail="Tap card", tx=None, ok=None, code=None)
 
     def start_register(self, code):
         self.set(mode="register", code=code, screen="Register card", detail=f"Code {code} — tap card", tx=None, ok=None, amount=None)
@@ -306,7 +338,7 @@ class Terminal:
                 time.sleep(1)
                 p = self.post(f"/api/pay/{pay_id}")
                 if p["status"] == "paid":
-                    self.set(mode="done", screen=f"Paid {p['amount']} tUSDC ✓", detail="Thank you!", tx=p.get("txHash"), ok=True)
+                    self.set(mode="done", screen=f"Paid {p['amount']} USDT ✓", detail="Thank you!", tx=p.get("txHash"), ok=True)
                     return
                 if p["status"] in ("failed", "rejected"):
                     self.set(mode="done", screen="Declined ✗", detail=p.get("error") or p["status"], ok=False)
@@ -317,8 +349,10 @@ class Terminal:
                 raise  # card hiccup while signing: let run_i2c retry while the card is still there
             self.write("SKIP")
             if self.state["mode"] in ("pay", "register", "waiting"):
-                self.set(detail=f"{e}", ok=None if "tap again" in str(e) else False,
-                         screen=self.state["screen"] if "tap again" in str(e) else "Declined ✗")
+                if "tap again" in str(e):
+                    self.set(detail=f"{e}")
+                else:
+                    self.set(mode="done", screen="Declined ✗", detail=f"{e}", ok=False)
         finally:
             self._reset_tap()
 
@@ -355,6 +389,16 @@ def make_handler(term):
                 term.start_register(str(body["code"]))
             elif self.path == "/cancel":
                 term.cancel()
+            elif self.path == "/volume":
+                try:
+                    term.set_volume(body["level"])
+                except (KeyError, TypeError, ValueError):
+                    return self._json({"error": "level must be 0-10"}, 400)
+            elif self.path == "/key":
+                key = body.get("key")
+                if not isinstance(key, str) or key not in KEY_NOTES:
+                    return self._json({"error": "unknown key"}, 400)
+                term.buzzer.key(key)
             self._json(term.state)
     return H
 
@@ -366,13 +410,24 @@ def main():
     ap.add_argument("--capk", default=os.path.join(HERE, "..", "reader", "tools", "capk.txt"))
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--i2c-bus", type=int, default=None, help="use an RFID reader on this I2C bus (Raspberry Pi) instead of --serial")
+    ap.add_argument("--buzzer-pin", type=int, default=None, help="BCM GPIO number of the buzzer (Raspberry Pi); no sound if unset")
+    ap.add_argument("--buzzer-kind", choices=KINDS, default="active", help="active plays rhythm only, passive plays real notes")
+    ap.add_argument("--buzzer-active-low", action="store_true", help="the buzzer sounds while the pin is low")
+    ap.add_argument("--buzzer-volume", type=int, default=DEFAULT_VOLUME, help="starting loudness in percent (0-100); the level saved from the screen wins")
     a = ap.parse_args()
     load_capks(a.capk)
-    term = Terminal(a.serial, a.relayer, a.i2c_bus)
+    level = load_level(a.buzzer_volume)
+    buzzer = make_buzzer(a.buzzer_pin, a.buzzer_kind, a.buzzer_active_low, level * 10)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # so systemd restarts leave the pin quiet
+    term = Terminal(a.serial, a.relayer, a.i2c_bus, buzzer, level)
     threading.Thread(target=term.run_i2c if term.reader else term.run, daemon=True).start()
     src = f"i2c-{a.i2c_bus} (chip 0x{term.reader.version:02X})" if term.reader else a.serial
     print(f"terminal UI on http://localhost:{a.port}  (reader {src}, relayer {a.relayer})", flush=True)
-    http.server.ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(term)).serve_forever()
+    buzzer.play("ready")
+    try:
+        http.server.ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(term)).serve_forever()
+    finally:
+        buzzer.close()
 
 
 if __name__ == "__main__":

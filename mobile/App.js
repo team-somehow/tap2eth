@@ -13,7 +13,12 @@ import { biometricsReady, createPhoneKey, forgetPhoneKey, signWithPhone } from "
 // The relayer runs on the laptop; `adb reverse tcp:8787 tcp:8787` makes it localhost on the phone.
 const RELAYER = "http://localhost:8787";
 
-const C = { paper: "#EEF1F5", surface: "#FFFFFF", ink: "#14213D", soft: "#4B5872", line: "#D7DDE6", gold: "#C9A14A", blue: "#2457F5", green: "#178A55", red: "#C0392B", ice: "#BFD8EE", warn: "#FFF3D6", chip: "#E3E8F0" };
+// Minimal NeoBrutalism: thin black borders, small hard shadows on things you press, one accent (yellow). Bank cards keep their own look.
+const C = { paper: "#FFFEF0", surface: "#FFFFFF", ink: "#0A0A0A", soft: "#4A4A4A", muted: "#8A8A8A", line: "#E7E4D6", yellow: "#FFE600", greenInk: "#0E7A3E", redInk: "#C4005A", card: "#14213D", cardAlt: "#2B3A67", gold: "#C9A14A" };
+/** The signature: a flat shadow, always bottom-right, never blurred. */
+const hard = (n = 3, color = C.ink) => ({ boxShadow: `${n}px ${n}px 0px 0px ${color}` });
+const box = { borderWidth: 2, borderColor: C.ink };
+const R = 12;
 
 async function api(path, body) {
   const ctl = new AbortController();
@@ -82,7 +87,7 @@ function dayLabel(ms) {
 // ------------------------------------------------------------------ small pieces
 
 /** Small icon set (Feather-style strokes). */
-function Icon({ name, size = 22, color = C.ink, sw = 2 }) {
+function Icon({ name, size = 22, color = C.ink, sw = 2.2 }) {
   const p = { stroke: color, strokeWidth: sw, fill: "none", strokeLinecap: "round", strokeLinejoin: "round" };
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24">
@@ -112,12 +117,36 @@ function Waves({ color = "rgba(255,255,255,.85)" }) {
     </View>
   );
 }
-function Button({ title, onPress, kind = "primary", disabled, big }) {
-  const st = { primary: [s.btnPrimary, s.btnTextLight], danger: [s.btnDanger, s.btnTextLight], ghost: [s.btnGhost, s.btnTextSoft], outline: [s.btnOutline, s.btnTextRed], soft: [s.btnSoft, s.btnTextInk] }[kind];
+/** A bordered block with the hard shadow that works as a button. Pressing sinks it into the page: it shifts by the shadow's size and the shadow goes. */
+function Press({ onPress, disabled, style, off = 3, shadow = C.ink, hitSlop, accessibilityLabel, children }) {
   return (
-    <Pressable disabled={disabled} onPress={onPress} style={({ pressed }) => [s.btn, st[0], big && { paddingVertical: 18 }, (pressed || disabled) && { opacity: 0.6 }]}>
-      <Text style={[s.btnText, st[1]]}>{title}</Text>
+    <Pressable onPress={onPress} disabled={disabled} hitSlop={hitSlop} accessibilityLabel={accessibilityLabel}
+      style={({ pressed }) => [s.face, hard(off, shadow), style, disabled && { opacity: 0.45 }, pressed && !disabled && { boxShadow: "0px 0px 0px 0px #0A0A0A", transform: [{ translateX: off }, { translateY: off }] }]}>
+      {children}
     </Pressable>
+  );
+}
+function Button({ title, onPress, kind = "primary", disabled, big }) {
+  if (kind === "ghost") {
+    return (
+      <Pressable disabled={disabled} onPress={onPress} style={({ pressed }) => [s.ghost, (pressed || disabled) && { opacity: 0.5 }]}>
+        <Text style={s.ghostTxt}>{title}</Text>
+      </Pressable>
+    );
+  }
+  const bg = { primary: C.yellow, danger: C.ink, soft: C.surface, outline: C.surface }[kind];
+  return (
+    <Press disabled={disabled} onPress={onPress} style={[s.btn, { backgroundColor: bg }, big && { paddingVertical: 17 }]}>
+      <Text style={[s.btnText, kind === "danger" && { color: "#fff" }, kind === "outline" && { color: C.redInk }]}>{title}</Text>
+    </Press>
+  );
+}
+/** Text field in the same bordered, shadowed frame. */
+function Field(props) {
+  return (
+    <View style={s.field}>
+      <TextInput placeholderTextColor={C.muted} underlineColorAndroid="transparent" {...props} style={s.fieldInput} />
+    </View>
   );
 }
 function Sheet({ visible, onClose, children }) {
@@ -138,7 +167,7 @@ function ScanArt() {
   }, [a]);
   return (
     <View style={s.scanArt}>
-      <View style={s.phoneOutline}><Waves color={C.blue} /></View>
+      <View style={s.phoneOutline}><Waves color={C.ink} /></View>
       <Animated.View style={[s.miniCard, { transform: [{ translateY: a.interpolate({ inputRange: [0, 1], outputRange: [0, -14] }) }] }]}>
         <Chip />
       </Animated.View>
@@ -148,29 +177,29 @@ function ScanArt() {
 /** Eye button that hides every amount in the app (balance, spent today, transaction amounts). */
 function Eye({ hidden, onPress }) {
   return (
-    <Pressable onPress={onPress} hitSlop={10} style={s.eye} accessibilityLabel={hidden ? "Show amounts" : "Hide amounts"}>
-      <Icon name={hidden ? "eyeOff" : "eye"} size={20} color={C.soft} />
+    <Pressable onPress={onPress} hitSlop={10} style={({ pressed }) => [s.eye, pressed && { backgroundColor: C.yellow }]} accessibilityLabel={hidden ? "Show amounts" : "Hide amounts"}>
+      <Icon name={hidden ? "eyeOff" : "eye"} size={20} color={C.ink} />
     </Pressable>
   );
 }
 function Stepper({ value, onChange, step = 1, min = 1, max = 100000 }) {
   return (
     <View style={s.stepper}>
-      <Pressable style={s.stepBtn} onPress={() => onChange(Math.max(min, value - step))}><Text style={s.stepTxt}>−</Text></Pressable>
+      <Press off={2} style={s.stepBtn} onPress={() => onChange(Math.max(min, value - step))}><Text style={s.stepTxt}>−</Text></Press>
       <Text style={s.stepVal}>{usdShort(value)}</Text>
-      <Pressable style={s.stepBtn} onPress={() => onChange(Math.min(max, value + step))}><Text style={s.stepTxt}>+</Text></Pressable>
+      <Press off={2} style={s.stepBtn} onPress={() => onChange(Math.min(max, value + step))}><Text style={s.stepTxt}>+</Text></Press>
     </View>
   );
 }
 function Steps({ at }) {
-  return <View style={s.steps}>{[1, 2, 3].map((n) => <View key={n} style={[s.stepBar, n <= at && { backgroundColor: C.blue }]} />)}</View>;
+  return <View style={s.steps}>{[1, 2, 3].map((n) => <View key={n} style={[s.stepBar, n <= at && { backgroundColor: C.yellow }]} />)}</View>;
 }
 function Back({ title, onPress }) {
   return <Pressable onPress={onPress} hitSlop={10}><Text style={s.back}>‹ {title}</Text></Pressable>;
 }
 function CardTile({ name, label, frozen, alt }) {
   return (
-    <View style={[s.tile, alt && { backgroundColor: "#2B3A67" }]}>
+    <View style={[s.tile, alt && { backgroundColor: C.cardAlt }]}>
       <Chip />
       <View style={{ flex: 1 }}><Text style={s.tileName}>{name}</Text><Text style={s.cardLabel}>{frozen ? "Frozen" : label}</Text></View>
       {frozen && <View style={s.frostSm}><Text style={s.frostSmText}>🔒</Text></View>}
@@ -181,12 +210,12 @@ function ActivityRow({ p, hidden, onOpen }) {
   const m = rowMeta(p);
   const amount = hidden ? MASK : (m.tone === "in" ? "+" : m.tone === "out" ? "−" : "") + usd(p.amount);
   return (
-    <Pressable style={({ pressed }) => [s.actRow, pressed && { backgroundColor: "#F5F7FA" }]} onPress={() => onOpen && onOpen(p)}>
+    <Pressable style={({ pressed }) => [s.actRow, pressed && { backgroundColor: C.paper }]} onPress={() => onOpen && onOpen(p)}>
       <View style={{ flex: 1, paddingRight: 8 }}>
         <Text style={s.bold}>{m.title}</Text>
-        <Text style={[s.small, m.bad && { color: C.red }, m.tone === "out" && { color: C.green }]}>{m.sub}{p.time ? ` · ${clock(p.time)}` : ""}</Text>
+        <Text style={[s.small, m.bad && { color: C.redInk }, m.tone === "out" && { color: C.greenInk }]}>{m.sub}{p.time ? ` · ${clock(p.time)}` : ""}</Text>
       </View>
-      <Text style={[s.actAmt, m.tone === "in" && { color: C.green }, m.tone === "dead" && !hidden && s.actDead]}>{amount}</Text>
+      <Text style={[s.actAmt, m.tone === "in" && { color: C.greenInk }, m.tone === "dead" && !hidden && s.actDead]}>{amount}</Text>
     </Pressable>
   );
 }
@@ -224,7 +253,7 @@ function Welcome({ onDone, onRecover }) {
   if (step !== "intro") {
     return (
       <View style={s.center}>
-        {step === "scanning" ? <ScanArt /> : <ActivityIndicator size="large" color={C.blue} />}
+        {step === "scanning" ? <ScanArt /> : <ActivityIndicator size="large" color={C.ink} />}
         <Text style={s.h2}>{step === "scanning" ? "Hold your card to the back of the phone" : "Creating your wallet"}</Text>
         <Text style={s.lede}>{step === "scanning" ? "Keep it still for a couple of seconds. We don't store your card number. The card is only used for signing your payments." : "Confirm with your fingerprint when asked."}</Text>
         {step === "scanning" && <Button kind="ghost" title="Cancel" onPress={() => { cancelCard(); setStep("intro"); }} />}
@@ -272,7 +301,7 @@ function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, 
         {frozen && <View style={s.frost}><Text style={s.frostText}>🔒 Frozen</Text></View>}
       </View>
 
-      <Text style={[s.small, { marginTop: 22 }]}>Wallet balance</Text>
+      <Text style={[s.small, { marginTop: 24 }]}>Wallet balance</Text>
       <View style={s.balanceLine}>
         <Text style={s.amount}>{w ? (hidden ? "••••••" : usd(w.balance)) : "–"}</Text>
         <Eye hidden={hidden} onPress={toggleHidden} />
@@ -280,19 +309,19 @@ function HomeTab({ w, wallet, hidden, toggleHidden, goActivity, onCopy, onOpen, 
       {w && (
         <>
           <Text style={s.meterText}>{hidden ? "Spent today ••••" : `${usd(w.spentToday)} of ${usd(w.dailyLimit)} spent today`}</Text>
-          <View style={s.meter}><View style={[s.meterFill, { width: `${pct}%` }]} /></View>
+          <View style={s.meter}><View style={[s.meterFill, pct >= 3 && s.meterEdge, { width: `${pct}%` }]} /></View>
         </>
       )}
 
       <View style={s.actions}>
-        <Pressable style={({ pressed }) => [s.actionBtn, s.actionPrimary, (pressed || !w) && { opacity: 0.7 }]} disabled={!w || frozen} onPress={onSend} accessibilityLabel="Send money">
-          <Icon name="up" size={20} color="#fff" /><Text style={s.actionTxtLight}>Send</Text>
-        </Pressable>
-        <Pressable style={({ pressed }) => [s.actionBtn, s.actionSoft, pressed && { opacity: 0.7 }]} onPress={onReceive} accessibilityLabel="Receive money">
-          <Icon name="down" size={20} color={C.ink} /><Text style={s.actionTxt}>Receive</Text>
-        </Pressable>
+        <Press style={[s.actionBtn, { backgroundColor: C.yellow }]} disabled={!w || frozen} onPress={onSend} accessibilityLabel="Send money">
+          <Icon name="up" size={20} /><Text style={s.actionTxt}>Send</Text>
+        </Press>
+        <Press style={[s.actionBtn, { backgroundColor: C.surface }]} onPress={onReceive} accessibilityLabel="Receive money">
+          <Icon name="down" size={20} /><Text style={s.actionTxt}>Receive</Text>
+        </Press>
       </View>
-      {frozen && <Text style={[s.small, { marginTop: 8 }]}>Sending is off while the wallet is frozen. Unfreeze it in Cards.</Text>}
+      {frozen && <Text style={[s.small, { marginTop: 12 }]}>Sending is off while the wallet is frozen. Unfreeze it in Cards.</Text>}
 
       <View style={s.sectionHead}>
         <Text style={s.sectionTitle}>Recent activity</Text>
@@ -422,7 +451,7 @@ function SmallScreen({ w, onBack, secure }) {
       <Text style={s.pageTitle}>Tap to pay, card only</Text>
       <Text style={s.soft}>Tap your card and you're done. No phone approval for small payments.</Text>
       <View style={[s.activity, { marginTop: 14 }]}>
-        <View style={s.ctlRow}><Text style={s.bold}>Turn on</Text><Switch value={on} onValueChange={setOn} trackColor={{ true: C.green }} /></View>
+        <View style={s.ctlRow}><Text style={s.bold}>Turn on</Text><Switch value={on} onValueChange={setOn} trackColor={{ false: C.line, true: C.ink }} thumbColor={C.yellow} /></View>
       </View>
       {on && (
         <>
@@ -493,7 +522,7 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
         <Text style={s.pageTitle}>Add a card</Text>
         <Text style={s.soft}>Tap the new card, then one of your current cards, then confirm with your fingerprint.</Text>
         <Text style={[s.small, { marginTop: 18 }]}>Name this card (optional)</Text>
-        <TextInput value={name} onChangeText={setName} placeholder="Dad's Visa" placeholderTextColor="#98A2B6" style={s.input} maxLength={24} />
+        <Field value={name} onChangeText={setName} placeholder="Dad's Visa" maxLength={24} />
         <Button title="Start" onPress={start} />
       </ScrollView>
     );
@@ -502,7 +531,7 @@ function AddCardScreen({ wallet, onBack, refresh, say }) {
   return (
     <View style={s.center}>
       <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
-      {stage === "sign" ? <ActivityIndicator size="large" color={C.blue} /> : stage === "mid" ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View> : <ScanArt />}
+      {stage === "sign" ? <ActivityIndicator size="large" color={C.ink} /> : stage === "mid" ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View> : <ScanArt />}
       <Text style={s.h2}>{stage === "tap1" ? "Tap the new card" : stage === "mid" ? "New card read" : stage === "tap2" ? "Now tap one of your current cards" : "Confirm it's you"}</Text>
       <Text style={s.lede}>{stage === "tap1" ? "Hold the card you want to add to the back of the phone. We don't store the card number." : stage === "mid" ? "Take it away from the phone. Then tap Continue and hold one of your current cards to the phone." : stage === "tap2" ? "One of your existing cards must agree to the new one." : "Use your fingerprint when asked."}</Text>
       {!!hint && stage === "tap2" && <Text style={[s.fieldErr, { textAlign: "center", marginBottom: 8 }]}>{hint}</Text>}
@@ -633,9 +662,9 @@ function RecoverScreen({ resume, onDone, onBack }) {
     const cancelled = !!info && !info.pending && !info.active;
     return (
       <View style={s.center}>
-        {cancelled ? <View style={[s.bigCheck, { backgroundColor: "#F6D9D5" }]}><Text style={{ fontSize: 40 }}>✕</Text></View>
-          : remaining === 0 ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View>
-          : <ActivityIndicator size="large" color={C.blue} />}
+        {cancelled ? <View style={[s.bigCheck, { backgroundColor: C.surface }]}><Text style={{ fontSize: 40, fontWeight: "800", color: C.redInk }}>✕</Text></View>
+          : remaining === 0 ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View>
+          : <ActivityIndicator size="large" color={C.ink} />}
         <Text style={s.h2}>{cancelled ? "Replacement cancelled" : remaining === 0 ? "Ready to finish" : "Moving your wallet here"}</Text>
         {!cancelled && remaining !== null && remaining > 0 && <Text style={[s.sheetAmount, { marginBottom: 8 }]}>{clock2(remaining)}</Text>}
         <Text style={s.lede}>{cancelled ? "The old phone stopped this replacement. If that was a mistake, start again." : remaining === 0 ? "The waiting period is over. Finish to start using this phone." : "This waiting period protects you if someone else started this. Your old phone can cancel it until the timer ends. You can close the app; it will pick up here."}</Text>
@@ -652,7 +681,7 @@ function RecoverScreen({ resume, onDone, onBack }) {
   return (
     <View style={s.center}>
       <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
-      {stage === "sign" || stage === "sending" ? <ActivityIndicator size="large" color={C.blue} /> : stage === "mid" ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View> : <ScanArt />}
+      {stage === "sign" || stage === "sending" ? <ActivityIndicator size="large" color={C.ink} /> : stage === "mid" ? <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View> : <ScanArt />}
       <Text style={s.h2}>{stage === "tap1" ? "Tap your first card" : stage === "mid" ? "First card read" : stage === "tap2" ? "Now tap a different card" : stage === "sign" ? "Confirm it's you" : "Starting the replacement…"}</Text>
       <Text style={s.lede}>{stage === "tap1" ? "Hold one of your wallet's cards to the back of the phone. We don't store the card number." : stage === "mid" ? "Take it away from the phone. Then tap Continue and hold a different card of this wallet to the phone." : stage === "tap2" ? "A second card of this wallet must agree." : stage === "sign" ? "Use your fingerprint when asked. This phone will become the wallet's phone." : "Recording it on the network."}</Text>
       {!!hint && stage === "tap2" && <Text style={[s.fieldErr, { textAlign: "center", marginBottom: 8 }]}>{hint}</Text>}
@@ -806,7 +835,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
     return (
       <View style={s.center}>
         <View style={{ alignSelf: "stretch" }}><Steps at={at} /></View>
-        {stage === "tap" ? <ScanArt /> : <ActivityIndicator size="large" color={C.blue} />}
+        {stage === "tap" ? <ScanArt /> : <ActivityIndicator size="large" color={C.ink} />}
         <Text style={s.h2}>{stage === "tap" ? "Tap your card" : stage === "sign" ? "Confirm it's you" : "Sending…"}</Text>
         <Text style={s.lede}>{stage === "tap" ? `Hold your bank card to the back of the phone to send ${usd(value)}. We don't store the card number.` : stage === "sign" ? "Use your fingerprint when asked." : "Your payment is being recorded on the network."}</Text>
         {stage === "tap" && <Button kind="ghost" title="Cancel" onPress={() => { cancelCard(); setStage("review"); }} />}
@@ -817,7 +846,7 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
   if (stage === "done" && result) {
     return (
       <View style={s.center}>
-        <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View>
+        <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View>
         <Text style={s.paidTitle}>Sent</Text>
         <Text style={s.sheetAmount}>{hidden ? MASK : usd(result.amount)}</Text>
         <Text style={[s.soft, { marginTop: 2, marginBottom: 18, textAlign: "center" }]}>to {shortAddr(result.to)}</Text>
@@ -860,23 +889,23 @@ function SendScreen({ w, wallet, onBack, refresh, say, hidden }) {
       <Text style={s.soft}>To any wallet address on Whitechain. Approve with card and fingerprint.</Text>
 
       <Text style={[s.small, { marginTop: 18 }]}>To</Text>
-      <TextInput value={addr} onChangeText={setAddr} placeholder="0x… wallet address" placeholderTextColor="#98A2B6" autoCapitalize="none" autoCorrect={false} spellCheck={false} style={[s.input, { marginBottom: 0 }]} />
+      <Field value={addr} onChangeText={setAddr} placeholder="0x… wallet address" autoCapitalize="none" autoCorrect={false} spellCheck={false} />
       {!!addrErr && <Text style={s.fieldErr}>{addrErr}</Text>}
       <View style={s.fieldRow}>
-        <Pressable style={s.smallBtn} onPress={openScan}><Icon name="scan" size={18} /><Text style={s.smallBtnTxt}>Scan QR</Text></Pressable>
-        <Pressable style={s.smallBtn} onPress={paste}><Icon name="copy" size={18} /><Text style={s.smallBtnTxt}>Paste</Text></Pressable>
+        <Press style={s.smallBtn} onPress={openScan}><Icon name="scan" size={18} /><Text style={s.smallBtnTxt}>Scan QR</Text></Press>
+        <Press style={s.smallBtn} onPress={paste}><Icon name="copy" size={18} /><Text style={s.smallBtnTxt}>Paste</Text></Press>
       </View>
       {!!recents.length && !addr && (
         <>
           <Text style={[s.small, { marginTop: 16 }]}>Recent</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-            {recents.map((a) => <Pressable key={a} style={s.recentChip} onPress={() => setAddr(a)}><Text style={s.smallBtnTxt}>{shortAddr(a)}</Text></Pressable>)}
+            {recents.map((a) => <Press key={a} off={3} style={s.recentChip} onPress={() => setAddr(a)}><Text style={s.smallBtnTxt}>{shortAddr(a)}</Text></Press>)}
           </View>
         </>
       )}
 
       <Text style={[s.small, { marginTop: 20 }]}>Amount (dollars)</Text>
-      <TextInput value={amt} onChangeText={setAmt} placeholder="0.00" placeholderTextColor="#98A2B6" keyboardType="decimal-pad" style={[s.input, { marginBottom: 0 }]} />
+      <Field value={amt} onChangeText={setAmt} placeholder="0.00" keyboardType="decimal-pad" />
       {!!amtErr && <Text style={s.fieldErr}>{amtErr}</Text>}
       <Text style={[s.small, { marginTop: 6 }]}>{hidden ? "Available ••••" : `Available ${usd(w.balance)} · up to ${usd(Math.min(Number(w.perTxLimit), left))} per send today`}</Text>
 
@@ -889,7 +918,7 @@ function SecureStatus({ busy }) {
   if (!busy) return null;
   return (
     <View style={{ alignItems: "center", marginVertical: 10 }}>
-      {busy === "scan" ? <ScanArt /> : <ActivityIndicator color={C.blue} />}
+      {busy === "scan" ? <ScanArt /> : <ActivityIndicator color={C.ink} />}
       <Text style={s.soft}>{busy === "scan" ? "Hold your bank card to the back of the phone." : "Confirm with your fingerprint."}</Text>
     </View>
   );
@@ -916,19 +945,19 @@ function PaySheetBody({ pay, payBusy, approve, decline }) {
 
       <View style={s.agree}>
         <View style={s.agreeRow}>
-          <View style={[s.agreeDot, { backgroundColor: "#D9EFE4" }]}><Icon name="check" size={16} color={C.green} sw={2.6} /></View>
+          <View style={[s.agreeDot, { backgroundColor: C.yellow }]}><Icon name="check" size={16} color={C.ink} sw={2.6} /></View>
           <Text style={s.bold}>Card</Text><Text style={s.agreeState}>tapped</Text>
         </View>
         <View style={[s.agreeRow, { marginTop: 10 }]}>
-          <View style={[s.agreeDot, { backgroundColor: sending ? "#D9EFE4" : "#FFF1D2" }]}><Icon name={sending ? "check" : "phone"} size={16} color={sending ? C.green : "#B7791F"} sw={2.4} /></View>
+          <View style={[s.agreeDot, { backgroundColor: sending ? C.yellow : C.surface }]}><Icon name={sending ? "check" : "phone"} size={16} color={C.ink} sw={2.4} /></View>
           <Text style={s.bold}>Fingerprint</Text><Text style={s.agreeState}>{sending ? "approved" : "approve now"}</Text>
         </View>
       </View>
 
       {Number(pay.expiry) > 0 && (
         <View style={s.metaRow}>
-          <Icon name="clock" size={14} color={secs < 30 ? C.red : C.soft} />
-          <Text style={[s.small, secs < 30 && { color: C.red }]}>{secs > 0 ? `Expires in ${label}` : "Expired"}</Text>
+          <Icon name="clock" size={14} color={secs < 30 ? C.redInk : C.ink} />
+          <Text style={[s.small, secs < 30 && { color: C.redInk }]}>{secs > 0 ? `Expires in ${label}` : "Expired"}</Text>
         </View>
       )}
       <Text style={[s.soft, { marginBottom: 14, marginTop: 4 }]}>Only confirm if you just tapped your card here.</Text>
@@ -948,8 +977,8 @@ function DetailBody({ p, hidden, onClose }) {
   return (
     <>
       <Text style={s.soft}>{m.title}</Text>
-      <Text style={[s.sheetAmount, m.tone === "dead" && !hidden && { color: "#8793A8" }]}>{amount}</Text>
-      <Text style={[s.soft, m.bad && { color: C.red }, m.tone === "out" && { color: C.green }, { marginBottom: 10 }]}>{m.sub}</Text>
+      <Text style={[s.sheetAmount, m.tone === "dead" && !hidden && { color: C.muted }]}>{amount}</Text>
+      <Text style={[s.soft, m.bad && { color: C.redInk }, m.tone === "out" && { color: C.greenInk }, { marginBottom: 10 }]}>{m.sub}</Text>
       <View style={s.activity}>
         {line("When", when)}
         {line("Approved with", approved)}
@@ -972,8 +1001,10 @@ function TabBar({ tab, setTab }) {
     <View style={s.tabbar}>
       {tabs.map(([id, label, icon]) => (
         <Pressable key={id} style={s.tab} onPress={() => setTab(id)} accessibilityLabel={label}>
-          <Icon name={icon} size={24} color={tab === id ? C.blue : "#8793A8"} />
-          <Text style={[s.tabLabel, tab === id && { color: C.blue }]}>{label}</Text>
+          <View style={[s.tabMark, tab === id && s.tabMarkOn]}>
+            <Icon name={icon} size={22} color={tab === id ? C.ink : C.muted} />
+          </View>
+          <Text style={[s.tabLabel, tab === id && { color: C.ink }]}>{label}</Text>
         </Pressable>
       ))}
     </View>
@@ -1006,7 +1037,7 @@ function Main({ wallet, onForget }) {
     try { await refresh(true); setFailures(0); } catch { say("Couldn't refresh right now. Showing the last update."); }
     setRefreshing(false);
   };
-  const refreshControl = <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.blue} />;
+  const refreshControl = <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.ink} colors={[C.ink]} progressBackgroundColor={C.surface} />;
 
   useEffect(() => { AsyncStorage.getItem("hideAmounts").then((v) => setHidden(v === "1")); }, []);
   const toggleHidden = () => setHidden((h) => { AsyncStorage.setItem("hideAmounts", h ? "0" : "1"); return !h; });
@@ -1154,7 +1185,7 @@ function Main({ wallet, onForget }) {
         : <CardsTab w={w} openSub={goSub} setFreezeOpen={setFreezeOpen} setUnfreezeOpen={setUnfreezeOpen} onForget={onForget} refreshControl={refreshControl} />}
 
       {!sub && <TabBar tab={tab} setTab={setTab} />}
-      {toast && <View style={[s.toast, toast.bad && { backgroundColor: C.red }]}><Text style={s.toastText}>{toast.text}</Text></View>}
+      {toast && <View style={[s.toast, toast.bad && { backgroundColor: C.redInk }]}><Text style={s.toastText}>{toast.text}</Text></View>}
 
       {/* Closing the sheet (back button, tapping outside, or the fingerprint dialog taking focus)
           must never decline the payment: only the Decline button does. Amounts here are never hidden. */}
@@ -1165,7 +1196,7 @@ function Main({ wallet, onForget }) {
       <Sheet visible={!!paid} onClose={() => setPaid(null)}>
         {paid && (
           <View style={{ alignItems: "center", paddingTop: 6 }}>
-            <View style={s.bigCheck}><Icon name="check" size={44} color={C.green} sw={2.6} /></View>
+            <View style={s.bigCheck}><Icon name="check" size={44} color={C.ink} sw={2.6} /></View>
             <Text style={s.paidTitle}>Paid</Text>
             <Text style={s.sheetAmount}>{usd(paid.amount)}</Text>
             <Text style={[s.soft, { marginTop: 2, marginBottom: 18 }]}>to {paid.merchantName}</Text>
@@ -1200,7 +1231,7 @@ function Main({ wallet, onForget }) {
           <Text style={[s.soft, { marginBottom: 18 }]}>Hold your bank card to the phone, then confirm with your fingerprint.</Text>
         )}
         {!busy && <Button big title="Scan my card" onPress={unfreeze} />}
-        {busy === "unfreeze" && <ActivityIndicator color={C.blue} style={{ marginVertical: 12 }} />}
+        {busy === "unfreeze" && <ActivityIndicator color={C.ink} style={{ marginVertical: 12 }} />}
         <Button kind="ghost" title="Not now" onPress={() => { cancelCard(); setBusy(""); setUnfreezeOpen(false); }} />
       </Sheet>
     </View>
@@ -1228,7 +1259,7 @@ export default function App() {
     ]);
   return (
     <View style={s.root}>
-      <StatusBar style="dark" />
+      <StatusBar style="dark" backgroundColor={C.paper} />
       {wallet === undefined ? null : wallet ? <Main wallet={wallet} onForget={forget} />
         : mode === "recover" ? <RecoverScreen resume={recovery} onDone={(w) => { setRecovery(null); setMode("welcome"); setWallet(w); }} onBack={() => { setRecovery(null); setMode("welcome"); }} />
         : <Welcome onDone={setWallet} onRecover={() => setMode("recover")} />}
@@ -1240,133 +1271,128 @@ const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.paper, paddingTop: 36 },
   page: { padding: 20, paddingBottom: 48 },
   center: { flex: 1, padding: 24, justifyContent: "center", alignItems: "center" },
-  display: { fontSize: 34, fontWeight: "800", color: C.ink, letterSpacing: -0.6, lineHeight: 38, marginTop: 6, marginBottom: 12 },
+  face: { backgroundColor: C.surface, ...box, borderRadius: R },
+  display: { fontSize: 34, fontWeight: "900", color: C.ink, letterSpacing: -0.8, lineHeight: 38, marginTop: 6, marginBottom: 12 },
   h2: { fontSize: 24, fontWeight: "800", color: C.ink, textAlign: "center", marginTop: 26, marginBottom: 8 },
-  pageTitle: { fontSize: 30, fontWeight: "800", color: C.ink, letterSpacing: -0.6, marginBottom: 6 },
+  pageTitle: { fontSize: 30, fontWeight: "900", color: C.ink, letterSpacing: -0.8, marginBottom: 6 },
   titleLine: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   lede: { fontSize: 17, color: C.soft, lineHeight: 24, marginBottom: 18, textAlign: "left" },
-  fine: { fontSize: 13, color: C.soft, marginTop: 10, lineHeight: 18 },
+  fine: { fontSize: 13, color: C.soft, marginTop: 12, lineHeight: 18 },
   note: { fontSize: 12, color: C.soft, textAlign: "center", marginTop: 10, marginBottom: 4 },
-  err: { color: C.red, marginTop: 14, fontSize: 15, fontWeight: "500" },
+  err: { color: C.redInk, marginTop: 14, fontSize: 15, fontWeight: "600" },
   bold: { fontWeight: "700", color: C.ink, fontSize: 15 },
   soft: { color: C.soft, fontSize: 15, lineHeight: 21 },
   small: { color: C.soft, fontSize: 13 },
+  // bank-card pieces: unchanged from the original design
   phoneOutline: { width: 56, height: 96, borderRadius: 12, borderWidth: 3, borderColor: C.ink, backgroundColor: C.surface, alignItems: "center", justifyContent: "center" },
   chip: { width: 38, height: 28, borderRadius: 6, backgroundColor: C.gold, alignItems: "center", justifyContent: "center" },
   chipInner: { width: 20, height: 14, borderRadius: 3, borderWidth: 1.5, borderColor: "rgba(80,58,15,.45)" },
-  btn: { borderRadius: 14, paddingVertical: 15, paddingHorizontal: 18, alignItems: "center", marginTop: 8 },
-  btnPrimary: { backgroundColor: C.blue },
-  btnDanger: { backgroundColor: C.red },
-  btnGhost: { backgroundColor: "transparent" },
-  btnSoft: { backgroundColor: C.chip },
-  btnOutline: { backgroundColor: "transparent", borderWidth: 1.5, borderColor: "#E6B8B2" },
-  btnText: { fontSize: 17, fontWeight: "600" },
-  btnTextLight: { color: "#fff" },
-  btnTextSoft: { color: C.soft },
-  btnTextInk: { color: C.ink },
-  btnTextRed: { color: C.red },
   scanArt: { height: 150, width: 160, alignItems: "center", justifyContent: "flex-end", marginBottom: 6 },
-  miniCard: { position: "absolute", top: 0, width: 120, height: 76, borderRadius: 12, backgroundColor: C.ink, padding: 12, justifyContent: "center" },
-  // home card
-  card: { aspectRatio: 1.586, borderRadius: 18, padding: 20, backgroundColor: C.ink, justifyContent: "space-between", overflow: "hidden", elevation: 8 },
+  miniCard: { position: "absolute", top: 0, width: 120, height: 76, borderRadius: 12, backgroundColor: C.card, padding: 12, justifyContent: "center" },
+  card: { aspectRatio: 1.586, borderRadius: 18, padding: 20, backgroundColor: C.card, justifyContent: "space-between", overflow: "hidden", elevation: 8 },
   cardRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   cardLabel: { color: "rgba(255,255,255,.65)", fontSize: 13 },
   cardName: { color: "#fff", fontSize: 22, fontWeight: "700", marginTop: 4 },
   pillText: { color: "#fff", fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
   frost: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(214,232,247,.93)", alignItems: "center", justifyContent: "center" },
   frostText: { fontSize: 26, fontWeight: "800", color: "#1C4F7A" },
-  tile: { height: 82, borderRadius: 16, backgroundColor: C.ink, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", gap: 14, overflow: "hidden" },
+  tile: { height: 82, borderRadius: 16, backgroundColor: C.card, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", gap: 14, overflow: "hidden" },
   tileName: { color: "#fff", fontSize: 17, fontWeight: "700" },
   frostSm: { position: "absolute", right: 14, top: 0, bottom: 0, justifyContent: "center" },
   frostSmText: { fontSize: 20 },
-  // balance
-  balanceLine: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 4, marginBottom: 4 },
-  balanceRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 22, marginBottom: 6 },
-  amount: { fontSize: 44, fontWeight: "800", color: C.ink, letterSpacing: -1.2 },
-  meter: { height: 8, borderRadius: 99, backgroundColor: C.line, overflow: "hidden", marginTop: 6 },
-  meterFill: { height: 8, backgroundColor: C.blue, borderRadius: 99 },
-  meterText: { fontSize: 13, color: C.soft, marginTop: 2 },
-  eye: { width: 36, height: 36, borderRadius: 18, backgroundColor: C.chip, alignItems: "center", justifyContent: "center" },
-  // lists
-  sectionHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginTop: 26, marginBottom: 6 },
-  sectionTitle: { fontSize: 18, fontWeight: "700", color: C.ink },
-  link2: { fontSize: 14, fontWeight: "600", color: C.blue },
-  day: { fontSize: 12, fontWeight: "700", color: C.soft, letterSpacing: 0.5, marginTop: 18, marginBottom: 6 },
-  sec: { fontSize: 13, fontWeight: "700", color: C.soft, letterSpacing: 0.5, marginTop: 24, marginBottom: 6 },
-  activity: { backgroundColor: C.surface, borderRadius: 16 },
-  actRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14 },
-  actBorder: { borderTopWidth: 1, borderColor: C.line },
-  actAmt: { fontSize: 16, fontWeight: "700", color: C.ink },
-  actDead: { color: "#8793A8", textDecorationLine: "line-through" },
-  ctlRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14 },
-  ctlVal: { fontSize: 14, color: C.soft },
-  ctlSub: { fontSize: 14, color: C.soft, marginTop: 3 },
-  chev: { fontSize: 26, color: "#8793A8", lineHeight: 28 },
-  link: { textAlign: "center", color: C.soft, textDecorationLine: "underline", marginTop: 16, fontSize: 14 },
-  // tab bar
-  tabbar: { flexDirection: "row", backgroundColor: "#fff", borderTopWidth: 1, borderColor: C.line, paddingTop: 8, paddingBottom: 14 },
-  tab: { flex: 1, alignItems: "center" },
-  tabLabel: { fontSize: 11, fontWeight: "600", color: "#8793A8", marginTop: 2 },
-  // settings screens
-  back: { color: C.blue, fontSize: 15, fontWeight: "600", marginBottom: 8 },
-  stepper: { flexDirection: "row", alignItems: "center", gap: 10 },
-  stepBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: C.line, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
-  stepTxt: { fontSize: 20, color: C.ink },
-  stepVal: { minWidth: 56, textAlign: "center", fontWeight: "700", fontSize: 17, color: C.ink },
-  steps: { flexDirection: "row", gap: 6, marginBottom: 12 },
-  stepBar: { flex: 1, height: 4, borderRadius: 9, backgroundColor: C.line },
-  warn: { backgroundColor: C.warn, borderRadius: 12, padding: 12, marginTop: 12, marginBottom: 6 },
-  warnText: { fontSize: 13, lineHeight: 19, color: "#6B4E00" },
-  input: { height: 52, borderRadius: 12, borderWidth: 1.5, borderColor: C.line, backgroundColor: "#fff", paddingHorizontal: 14, fontSize: 17, color: C.ink, marginTop: 6, marginBottom: 6 },
-  recoBanner: { backgroundColor: C.warn, marginHorizontal: 16, marginTop: 10, padding: 12, borderRadius: 12 },
-  recoTitle: { fontSize: 14, fontWeight: "700", color: "#6B4E00" },
-  recoSub: { fontSize: 13, color: "#6B4E00", marginTop: 2, lineHeight: 18 },
-  // send / receive
-  actions: { flexDirection: "row", gap: 12, marginTop: 20 },
-  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 14 },
-  actionPrimary: { backgroundColor: C.blue },
-  actionSoft: { backgroundColor: C.chip },
-  actionTxtLight: { color: "#fff", fontSize: 17, fontWeight: "600" },
-  actionTxt: { color: C.ink, fontSize: 17, fontWeight: "600" },
-  qrBox: { alignSelf: "center", backgroundColor: "#fff", padding: 18, borderRadius: 20, marginTop: 18, marginBottom: 16 },
-  addrFull: { fontSize: 15, color: C.ink, textAlign: "center", lineHeight: 22, letterSpacing: 0.2, marginBottom: 6 },
-  fieldRow: { flexDirection: "row", gap: 8, marginTop: 6 },
-  smallBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, height: 52, borderRadius: 12, backgroundColor: C.chip },
-  smallBtnTxt: { fontSize: 15, fontWeight: "600", color: C.ink },
-  recentChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 99, backgroundColor: C.chip, marginRight: 8, marginTop: 8 },
-  fieldErr: { color: C.red, fontSize: 13, marginTop: 4 },
-  reviewAmt: { fontSize: 54, fontWeight: "800", color: C.ink, letterSpacing: -1.4, marginTop: 8 },
-  camWrap: { flex: 1, backgroundColor: "#000" },
-  camFrame: { position: "absolute", top: "26%", alignSelf: "center", width: 250, height: 250, borderWidth: 3, borderColor: "#fff", borderRadius: 24 },
-  camBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: 24, paddingBottom: 40, backgroundColor: "rgba(0,0,0,.55)" },
-  // wallet address on the card
   addrRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 },
   copyBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(255,255,255,.18)", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 99 },
   copyTxt: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  // buttons
+  btn: { marginTop: 12, paddingVertical: 14, paddingHorizontal: 18, alignItems: "center" },
+  btnText: { fontSize: 16, fontWeight: "800", color: C.ink },
+  ghost: { marginTop: 8, paddingVertical: 12, alignItems: "center" },
+  ghostTxt: { fontSize: 15, fontWeight: "600", color: C.soft },
+  // balance
+  balanceLine: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 4, marginBottom: 4 },
+  balanceRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 22, marginBottom: 6 },
+  amount: { fontSize: 44, fontWeight: "900", color: C.ink, letterSpacing: -1.2 },
+  meter: { height: 12, borderRadius: 99, ...box, backgroundColor: C.surface, overflow: "hidden", marginTop: 8 },
+  meterFill: { height: "100%", backgroundColor: C.yellow },
+  meterEdge: { borderRightWidth: 2, borderColor: C.ink },
+  meterText: { fontSize: 13, color: C.soft, marginTop: 2 },
+  eye: { width: 36, height: 36, borderRadius: 10, ...box, backgroundColor: C.surface, alignItems: "center", justifyContent: "center" },
+  // lists
+  sectionHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginTop: 28, marginBottom: 10 },
+  sectionTitle: { fontSize: 18, fontWeight: "800", color: C.ink },
+  link2: { fontSize: 14, fontWeight: "700", color: C.ink, textDecorationLine: "underline" },
+  day: { fontSize: 12, fontWeight: "800", color: C.soft, letterSpacing: 0.8, marginTop: 20, marginBottom: 8 },
+  sec: { fontSize: 12, fontWeight: "800", color: C.soft, letterSpacing: 0.8, marginTop: 26, marginBottom: 8 },
+  activity: { backgroundColor: C.surface, ...box, borderRadius: R, ...hard(3), overflow: "hidden" },
+  actRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14 },
+  actBorder: { borderTopWidth: 1, borderColor: C.line },
+  actAmt: { fontSize: 16, fontWeight: "800", color: C.ink },
+  actDead: { color: C.muted, textDecorationLine: "line-through" },
+  ctlRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14 },
+  ctlVal: { fontSize: 14, color: C.soft },
+  ctlSub: { fontSize: 14, color: C.soft, marginTop: 3 },
+  chev: { fontSize: 26, color: C.ink, lineHeight: 28 },
+  link: { textAlign: "center", color: C.soft, textDecorationLine: "underline", marginTop: 18, fontSize: 14 },
+  // tab bar
+  tabbar: { flexDirection: "row", backgroundColor: C.surface, borderTopWidth: 2, borderColor: C.ink, paddingTop: 8, paddingBottom: 14 },
+  tab: { flex: 1, alignItems: "center" },
+  tabMark: { paddingHorizontal: 16, paddingVertical: 3, borderRadius: 14, backgroundColor: "rgba(255,230,0,0)" },
+  tabMarkOn: { backgroundColor: C.yellow },
+  tabLabel: { fontSize: 11, fontWeight: "700", color: C.muted, marginTop: 3 },
+  // settings screens
+  back: { color: C.ink, fontSize: 15, fontWeight: "700", marginBottom: 8 },
+  stepper: { flexDirection: "row", alignItems: "center", gap: 10 },
+  stepBtn: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  stepTxt: { fontSize: 20, fontWeight: "700", color: C.ink, lineHeight: 24 },
+  stepVal: { minWidth: 56, textAlign: "center", fontWeight: "800", fontSize: 17, color: C.ink },
+  steps: { flexDirection: "row", gap: 6, marginBottom: 14 },
+  stepBar: { flex: 1, height: 8, borderRadius: 99, ...box, backgroundColor: C.surface },
+  warn: { backgroundColor: C.surface, borderRadius: R, ...box, padding: 12, marginTop: 14, marginBottom: 6 },
+  warnText: { fontSize: 13, lineHeight: 19, color: C.ink },
+  field: { ...box, borderRadius: R, backgroundColor: C.surface, marginTop: 6, marginBottom: 8 },
+  fieldInput: { height: 48, paddingHorizontal: 14, fontSize: 17, color: C.ink, backgroundColor: "transparent" },
+  recoBanner: { backgroundColor: C.yellow, marginHorizontal: 16, marginTop: 10, padding: 12, borderRadius: R, ...box },
+  recoTitle: { fontSize: 14, fontWeight: "800", color: C.ink },
+  recoSub: { fontSize: 13, color: C.ink, marginTop: 2, lineHeight: 18 },
+  // send / receive
+  actions: { flexDirection: "row", gap: 12, marginTop: 20 },
+  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14 },
+  actionTxt: { color: C.ink, fontSize: 16, fontWeight: "800" },
+  qrBox: { alignSelf: "center", backgroundColor: "#fff", padding: 16, borderRadius: R, ...box, ...hard(3), marginTop: 18, marginBottom: 16 },
+  addrFull: { fontSize: 14, color: C.ink, textAlign: "center", lineHeight: 21, fontFamily: "monospace", marginBottom: 6 },
+  fieldRow: { flexDirection: "row", gap: 10, marginTop: 6 },
+  smallBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, height: 44 },
+  smallBtnTxt: { fontSize: 15, fontWeight: "700", color: C.ink },
+  recentChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 99, marginRight: 10, marginTop: 10 },
+  fieldErr: { color: C.redInk, fontSize: 13, marginTop: 2, marginBottom: 4 },
+  reviewAmt: { fontSize: 54, fontWeight: "900", color: C.ink, letterSpacing: -1.4, marginTop: 8 },
+  camWrap: { flex: 1, backgroundColor: "#000" },
+  camFrame: { position: "absolute", top: "26%", alignSelf: "center", width: 250, height: 250, borderWidth: 3, borderColor: C.yellow, borderRadius: 24 },
+  camBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: 24, paddingBottom: 40, backgroundColor: "rgba(0,0,0,.6)" },
   // welcome steps
   howRow: { flexDirection: "row", alignItems: "flex-start", gap: 14, marginBottom: 16 },
-  howNum: { width: 34, height: 34, borderRadius: 17, backgroundColor: "#FFF1D2", alignItems: "center", justifyContent: "center", marginTop: 1 },
+  howNum: { width: 34, height: 34, borderRadius: 10, backgroundColor: C.yellow, ...box, alignItems: "center", justifyContent: "center", marginTop: 1 },
   howNumTxt: { fontWeight: "800", color: C.ink, fontSize: 15 },
   howTxt: { flex: 1, fontSize: 16, lineHeight: 23, color: C.ink },
   caption: { fontSize: 13, color: C.soft, textAlign: "center", marginTop: 6, marginBottom: 8 },
   // approval sheet, success, details
-  agree: { backgroundColor: C.paper, borderRadius: 14, padding: 14, marginBottom: 12 },
+  agree: { backgroundColor: C.surface, borderRadius: R, ...box, padding: 14, marginBottom: 12 },
   agreeRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  agreeDot: { width: 30, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center" },
+  agreeDot: { width: 30, height: 30, borderRadius: 8, ...box, alignItems: "center", justifyContent: "center" },
   agreeState: { marginLeft: "auto", color: C.soft, fontSize: 13, fontWeight: "600" },
   metaRow: { flexDirection: "row", justifyContent: "flex-start", alignItems: "center", gap: 5, marginBottom: 4 },
-  bigCheck: { width: 84, height: 84, borderRadius: 42, backgroundColor: "#D9EFE4", alignItems: "center", justifyContent: "center", marginBottom: 12 },
+  bigCheck: { width: 84, height: 84, borderRadius: 42, backgroundColor: C.yellow, ...box, alignItems: "center", justifyContent: "center", marginBottom: 14 },
   paidTitle: { fontSize: 22, fontWeight: "800", color: C.ink, marginBottom: 2 },
   detailRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 12, paddingHorizontal: 14, borderTopWidth: 1, borderColor: C.line },
-  quiet: { backgroundColor: C.chip, paddingVertical: 6, alignItems: "center" },
+  quiet: { backgroundColor: C.surface, paddingVertical: 6, alignItems: "center", borderBottomWidth: 1, borderColor: C.ink },
   quietTxt: { color: C.soft, fontSize: 12, fontWeight: "500" },
   // sheets and toast
-  scrim: { flex: 1, backgroundColor: "rgba(20,33,61,.45)" },
-  sheet: { backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingTop: 10, paddingBottom: 30 },
-  grabber: { width: 40, height: 5, borderRadius: 9, backgroundColor: C.line, alignSelf: "center", marginBottom: 18 },
-  merchant: { fontSize: 22, fontWeight: "700", color: C.ink, marginTop: 2 },
-  sheetAmount: { fontSize: 54, fontWeight: "800", color: C.ink, letterSpacing: -1.4 },
-  sheetTitle: { fontSize: 26, fontWeight: "800", color: C.ink, marginBottom: 8 },
-  toast: { position: "absolute", left: 20, right: 20, bottom: 90, backgroundColor: C.ink, padding: 14, borderRadius: 12 },
-  toastText: { color: "#fff", fontWeight: "500", fontSize: 15, textAlign: "center" },
+  scrim: { flex: 1, backgroundColor: "rgba(10,10,10,.45)" },
+  sheet: { backgroundColor: C.paper, borderTopLeftRadius: 22, borderTopRightRadius: 22, borderTopWidth: 2, borderLeftWidth: 2, borderRightWidth: 2, borderColor: C.ink, padding: 22, paddingTop: 10, paddingBottom: 30 },
+  grabber: { width: 40, height: 5, borderRadius: 9, backgroundColor: C.ink, alignSelf: "center", marginBottom: 18 },
+  merchant: { fontSize: 22, fontWeight: "800", color: C.ink, marginTop: 2 },
+  sheetAmount: { fontSize: 54, fontWeight: "900", color: C.ink, letterSpacing: -1.4 },
+  sheetTitle: { fontSize: 26, fontWeight: "900", color: C.ink, marginBottom: 8 },
+  toast: { position: "absolute", left: 20, right: 20, bottom: 90, backgroundColor: C.ink, padding: 14, borderRadius: R },
+  toastText: { color: "#fff", fontWeight: "600", fontSize: 15, textAlign: "center" },
 });

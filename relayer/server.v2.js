@@ -25,7 +25,11 @@ const DEPLOYMENTS = path.join(__dirname, "..", "contracts", "deployments");
 const TTL = 300; // seconds a payment or action request stays valid
 const MAX_GAS_PRICE = ethers.parseUnits(process.env.MAX_GAS_PRICE_GWEI || "100", "gwei");
 const DAILY_GAS_BUDGET = ethers.parseEther(process.env.DAILY_GAS_BUDGET || "0.5");
-const MERCHANT = process.env.MERCHANT_ADDRESS || "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"; // Hardhat account #1
+// Where every terminal (POS) payment goes: the cafe owner's wallet. The terminal never chooses the receiver.
+// Only the address is used here; CAFE_OWNER_KEY in .env is for the owner to move the money later, never read by the server.
+const MERCHANT_RAW = process.env.CAFE_OWNER_ADDRESS || process.env.MERCHANT_ADDRESS || "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"; // last: Hardhat account #1
+if (!ethers.isAddress(MERCHANT_RAW)) throw new Error(`CAFE_OWNER_ADDRESS is not a valid address: ${MERCHANT_RAW}`);
+const MERCHANT = ethers.getAddress(MERCHANT_RAW);
 const MERCHANT_NAME = process.env.MERCHANT_NAME || "Tap2ETH Café";
 const RECOVERY_DELAY = Number(process.env.RECOVERY_DELAY || 86400);
 // Wallet creations and recoveries allowed per IP per hour. Generous by default so a hackathon demo (many sign-ups from
@@ -102,6 +106,7 @@ async function setup() {
   decimals = Number(await token.decimals());
   save();
   console.log(`chain ${chainKey}  factory ${factoryAddr}  token ${tokenAddr}${giftable ? " (test token with faucet)" : ""}  relayer ${await relayer.getAddress()}`);
+  console.log(`terminal payments go to the cafe owner ${MERCHANT}`);
 }
 
 // ------------------------------------------------------------------ gas protection
