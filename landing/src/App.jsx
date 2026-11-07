@@ -1,12 +1,13 @@
 import { useRef } from 'react';
 import Stage from './Stage.jsx';
 
-const GITHUB = 'https://github.com/team-somehow/ethglobal-mumbai';
+const GITHUB = 'https://github.com/team-somehow/tap2eth';
 const WHITEPAPER = `${GITHUB}/blob/main/docs/WHITEPAPER.md`;
 const PROTOCOL = `${GITHUB}/blob/main/docs/PROTOCOL.md`;
 const DEMO = 'https://youtu.be/yceDX-JkmSc';
 const WC = 'https://explorer.testnet.whitechain.io';
 const ARC = 'https://explorer.testnet.arc.io';
+const APK = `${GITHUB}/releases/latest/download/tap2eth.apk`; // GitHub release asset (Firebase's free plan refuses APKs); built by ../apk.sh against https://api.tap2eth.com
 
 function Ext({ href, className, children }) {
   return <a className={className} href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
@@ -35,7 +36,7 @@ function Nav() {
         <a href="#how">How it works</a>
         <a href="#proof">The proof</a>
       </nav>
-      <Ext className="nav-source" href={GITHUB}>View source <Arrow /></Ext>
+      <a className="nav-source" href={APK} download="tap2eth.apk">Get the app <Arrow down /></a>
     </header>
   );
 }
@@ -50,10 +51,10 @@ function Hero({ stageRef }) {
           <h1>Your bank card.<br />Now your<br /><span className="highlight">crypto wallet.</span></h1>
           <p className="lede">Tap the card you already carry. Approve on your phone. Pay in stablecoins.</p>
           <div className="cta-row">
-            <a className="btn btn-ink" href="#demo">Watch the demo <Arrow down /></a>
-            <Ext className="text-link" href={WHITEPAPER}>Read the whitepaper <Arrow /></Ext>
+            <a className="btn btn-ink" href={APK} download="tap2eth.apk">Download the Android app <Arrow down /></a>
+            <a className="text-link" href="#demo">Watch the demo <Arrow down /></a>
           </div>
-          <p className="hero-note">No seed phrase. No extra card. Just a tap.</p>
+          <p className="hero-note">Android with NFC · 30 MB APK · testnet. No seed phrase. No extra card. Just a tap.</p>
         </div>
         <div className="hero-stage" ref={stageRef}>
           <div className="fallback-card" aria-hidden="true"><span>YOUR BANK</span><i /><b>•••• &nbsp; •••• &nbsp; 4821</b><em>tap.</em></div>
@@ -211,9 +212,9 @@ function Footer() {
   return (
     <>
       <section className="outro">
-        <div className="wrap"><span className="eyebrow">Open source. Built in Mumbai.</span><h2>The next wallet<br />is already in your pocket.</h2><Ext className="btn btn-ink" href={GITHUB}>Build with Tap2ETH <Arrow /></Ext><span className="outro-mark" aria-hidden="true"><Logo /></span></div>
+        <div className="wrap"><span className="eyebrow">Open source. Built in Mumbai.</span><h2>The next wallet<br />is already in your pocket.</h2><a className="btn btn-ink" href={APK} download="tap2eth.apk">Download the Android app <Arrow down /></a><span className="outro-mark" aria-hidden="true"><Logo /></span></div>
       </section>
-      <footer><div className="wrap"><a className="brand" href="#top"><Logo />Tap2ETH</a><span>Made by team-somehow · ETHGlobal Mumbai 2026</span><nav className="footer-links" aria-label="Footer"><Ext href={WHITEPAPER}>Whitepaper ↗</Ext><Ext href={GITHUB}>Protocol repo ↗</Ext></nav><small>Testnet demo. Not affiliated with Visa or Mastercard.</small></div></footer>
+      <footer><div className="wrap"><a className="brand" href="#top"><Logo />Tap2ETH</a><span>Made by team-somehow · ETHGlobal Mumbai 2026</span><nav className="footer-links" aria-label="Footer"><Ext href={WHITEPAPER}>Whitepaper ↗</Ext><Ext href={GITHUB}>Protocol repo ↗</Ext><a href={APK} download="tap2eth.apk">Android app ↓</a></nav><small>Testnet demo. Not affiliated with Visa or Mastercard.</small></div></footer>
     </>
   );
 }
