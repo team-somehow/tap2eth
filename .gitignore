@@ -37,3 +37,7 @@ relayer/state*.json
 relayer/.env*
 # Built APKs (the switchable app and the per-network variants)
 /tap2eth*.apk
+
+# local deployer keys, never commit
+contracts/.mainnet.env
+contracts/.env*

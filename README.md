@@ -8,6 +8,8 @@ Runs on **Whitechain** testnet with USDT. Through **Uniswap v3** on Ethereum Sep
 
 Built at ETHGlobal Mumbai 2026 by team-somehow · [tap2eth.web.app](https://tap2eth.web.app)
 
+> **Uniswap judges, start here:** the [Uniswap integration](#uniswap-integration-ethereum-sepolia) section has the code pointers, contract addresses and transactions. The core call is `exactOutputSingle` at [`Tap2EthSwap.sol` L146](contracts/contracts/swap/Tap2EthSwap.sol#L146), and our notes on building with Uniswap are in [`FEEDBACK.md`](FEEDBACK.md).
+
 ## How it works
 
 1. **The card is a signer.** A contactless bank card's chip holds an RSA key the bank put there. The key can't be read out, but the card signs a 4-byte challenge for any reader, with no PIN (EMV `INTERNAL AUTHENTICATE`). Its public key comes with a certificate chain: Visa or Mastercard → bank → card.
@@ -31,6 +33,9 @@ Built at ETHGlobal Mumbai 2026 by team-somehow · [tap2eth.web.app](https://tap2
 |---|---|---|---|
 | Whitechain testnet (1874) | `Tap2EthFactoryV2` [`0xb413…557A`](https://explorer.testnet.whitechain.io/address/0xb413D6AA35c3901Bac6D441e8f1b38640416557A#code) | Track USDT | Verified |
 | Ethereum Sepolia (11155111) | `Tap2EthFactorySwap` [`0xbE33…9a0B`](https://sepolia.etherscan.io/address/0xbE33a5f63dC26F6D0131Cf1186eDa781DB879a0B) | ETH, swapped to USDT on Uniswap v3 | Not verified yet |
+| Ethereum mainnet (1) | `Tap2EthFactorySwap` [`0xfff6…bD7d`](https://etherscan.io/address/0xfff6de8b0A995a2fd33b1E93619ccb9Ba06BbD7d) ([deploy tx](https://etherscan.io/tx/0xd8d0366b4881e0d0d92c4c96f5a0a8cee993d7179b3b7e5648c1b74901b6393b)) | ETH, swapped to USDT on Uniswap v3 | Not verified yet |
+
+The mainnet factory is the same swap contract as on Sepolia, deployed against the mainnet Uniswap v3 SwapRouter02, WETH and USDT. It is **experimental and unaudited**, and we have not run payments through it yet. The deployed wallet implementation is [`0x9122…d07c`](https://etherscan.io/address/0x91229Fc7AD59BBF2350F49ff22fa9BEb277ad07c). Don't deposit more than you can afford to lose.
 
 All addresses are in [`contracts/deployments/`](contracts/deployments/). To check them against this repo yourself, see [`contracts/README.md`](contracts/README.md).
 

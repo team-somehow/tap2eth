@@ -1,0 +1,13 @@
+{
+  "chainId": 1,
+  "deployer": "0xC4f3721f8772a54e63abd9A855F1327E88d986DA",
+  "factorySwap": "0xfff6de8b0A995a2fd33b1E93619ccb9Ba06BbD7d",
+  "walletImplementationSwap": "0x91229Fc7AD59BBF2350F49ff22fa9BEb277ad07c",
+  "factorySwapTx": "0xd8d0366b4881e0d0d92c4c96f5a0a8cee993d7179b3b7e5648c1b74901b6393b",
+  "uniswap": {
+    "router": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+    "weth": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "usdt": "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+  },
+  "deployedAt": "2026-11-07T03:25:06.173Z"
+}
