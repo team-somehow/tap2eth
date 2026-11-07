@@ -27,7 +27,7 @@ Built at ETHGlobal Mumbai 2026 by team-somehow · [tap2eth.web.app](https://tap2
 - **Recovery:** a lost card is replaced after a time lock. A lost phone is replaced by two enrolled cards after a delay. Any signer can cancel either.
 - **Pay in ETH** (Sepolia): the wallet swaps its ETH on Uniswap v3 so the merchant gets the exact USDT amount, in one transaction. The wallet can also send and receive ETH, with its own ETH limits.
 
-## Live on testnet
+## Live on mainet and testnet
 
 | Chain | Contract | Settles in | Source |
 |---|---|---|---|
